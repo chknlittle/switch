@@ -3,3 +3,6 @@
 !.gitkeep
 !read-memory.md
 !write-memory.md
+!spawn-session.md
+!close-sessions.md
+!code-simplifier.md
