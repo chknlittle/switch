@@ -4,6 +4,8 @@
 
 Switch creates a chat-based interface for AI coding assistants. Each conversation session becomes a separate XMPP contact, allowing you to manage multiple concurrent AI conversations from any XMPP client (Conversations, Gajim, Dino, etc.).
 
+The codebase lives at `~/switch`. AI agents working on this project should reference `~/switch/AGENTS.md` for conventions and `~/switch/memory/` for persistent context.
+
 ```mermaid
 flowchart TB
     Client["XMPP Client<br/>(Phone/PC)"] <--> Dispatcher["Dispatcher Bot<br/>(oc@...)"]
@@ -45,11 +47,11 @@ Coordinates all bots:
 
 2. **Continuing Session**: Message to session contact → SessionBot receives → run AI backend → stream response back
 
-3. **Session Output**: All AI output logged to `output/<session>.log` for debugging and `/peek` command
+3. **Session Output**: All AI output logged to `~/switch/output/<session>.log` for debugging and `/peek` command
 
 ## Database Schema
 
-SQLite database (`sessions.db`) stores:
+SQLite database (`~/switch/sessions.db`) stores:
 
 ```sql
 sessions (

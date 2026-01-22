@@ -26,9 +26,8 @@ uv sync
 cp .env.example .env
 # Edit .env with your XMPP server details
 
-# Set up agent instructions (shared across all backends)
-vim ~/AGENTS.md
-ln -s ~/AGENTS.md ~/CLAUDE.md
+# Agent instructions are symlinked to home (for Claude Code and OpenCode)
+# Edit ~/switch/AGENTS.md - symlinks at ~/AGENTS.md and ~/CLAUDE.md point here
 
 # Run
 uv run python -m src.bridge
@@ -80,6 +79,7 @@ flowchart LR
 - [Commands Reference](docs/commands.md) - All available commands
 - [Architecture](docs/architecture.md) - How the system works
 - [Memory Vault](docs/memory.md) - Store local learnings and runbooks
+- [AGENTS.md](AGENTS.md) - Instructions for AI agents working on this codebase
 
 ## Requirements
 

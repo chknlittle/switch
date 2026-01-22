@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.bots.ralph_mixin import RalphMixin
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
 from src.helpers import (
@@ -17,7 +18,6 @@ from src.helpers import (
     log_activity,
     register_unique_account,
 )
-from src.ralph import RalphLoop
 from src.runners import ClaudeRunner, OpenCodeResult, OpenCodeRunner
 from src.utils import BaseXMPPBot
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from src.manager import SessionManager
 
 
-class SessionBot(BaseXMPPBot):
+class SessionBot(RalphMixin, BaseXMPPBot):
     """XMPP bot for a single session."""
 
     def __init__(
@@ -49,7 +49,6 @@ class SessionBot(BaseXMPPBot):
         self.db = db
         self.sessions = SessionRepository(db)
         self.messages = MessageRepository(db)
-        self.ralph_loops = RalphLoopRepository(db)
         self.working_dir = working_dir
         self.output_dir = output_dir
         self.xmpp_recipient = xmpp_recipient
@@ -59,8 +58,8 @@ class SessionBot(BaseXMPPBot):
         self.manager = manager
         self.runner: OpenCodeRunner | ClaudeRunner | None = None
         self.processing = False
-        self.ralph_loop: RalphLoop | None = None
         self.log = logging.getLogger(f"session.{session_name}")
+        self.init_ralph(RalphLoopRepository(db))
         self.commands = CommandHandler(self)
 
         self.add_event_handler("session_start", self.on_start)
@@ -391,22 +390,6 @@ class SessionBot(BaseXMPPBot):
             response_parts[-1] if response_parts else "",
             engine,
         )
-
-    # -------------------------------------------------------------------------
-    # Ralph loop
-    # -------------------------------------------------------------------------
-
-    async def _run_ralph(self):
-        if not self.ralph_loop:
-            return
-        try:
-            await self.ralph_loop.run()
-        except Exception as e:
-            self.log.exception("Ralph loop error")
-            self.send_reply(f"Ralph crashed: {e}")
-        finally:
-            self.ralph_loop = None
-            self.processing = False
 
     # -------------------------------------------------------------------------
     # Sibling sessions

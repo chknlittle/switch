@@ -1,15 +1,14 @@
 # Commands Reference
 
+Commands are implemented in `~/switch/src/commands/handlers.py` using decorator-based registration.
+
 ## Dispatcher Commands
 
-Send these to the dispatcher bot (`oc@domain`):
+Send these to the dispatcher bot (`cc@`, `oc@`, or `oc-gpt@`):
 
 | Command | Description |
 |---------|-------------|
-| `<message>` | Create new session with OpenCode (GLM 4.7, default) |
-| `@cc <message>` | Create new session with Claude Code |
-| `@oc <message>` | Create new session with OpenCode (GLM 4.7) |
-| `@oc gpt <message>` | Create new session with OpenCode (GPT 5.2) |
+| `<message>` | Create new session (backend depends on which dispatcher you message) |
 | `/list` | Show all sessions |
 | `/recent` | Show 10 most recent sessions with status |
 | `/kill <name>` | End a session and delete XMPP account |

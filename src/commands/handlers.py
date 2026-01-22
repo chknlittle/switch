@@ -11,30 +11,44 @@ if TYPE_CHECKING:
     from src.bots.session import SessionBot
 
 
+def command(name: str, *aliases: str, exact: bool = True):
+    """Decorator to register a command handler.
+
+    Args:
+        name: Primary command name (e.g., "/kill")
+        *aliases: Additional names that trigger this command
+        exact: If True, requires exact match; if False, allows prefix match
+    """
+    def decorator(func: Callable[..., Awaitable[bool]]) -> Callable[..., Awaitable[bool]]:
+        func._command_name = name
+        func._command_aliases = aliases
+        func._command_exact = exact
+        return func
+    return decorator
+
+
 class CommandHandler:
     """Handles slash commands for a session bot.
 
-    Each command is a method prefixed with cmd_ that returns True if handled.
-    Commands are registered in the dispatch table on init.
+    Commands are registered via the @command decorator on methods.
+    The handler auto-discovers all decorated methods on init.
     """
 
     def __init__(self, bot: "SessionBot"):
         self.bot = bot
+        self._commands: dict[str, tuple[Callable[[str], Awaitable[bool]], bool]] = {}
+        self._discover_commands()
 
-        # Command dispatch table: prefix -> (handler, needs_exact_match)
-        self._commands: dict[str, tuple[Callable[[str], Awaitable[bool]], bool]] = {
-            "/kill": (self.cmd_kill, True),
-            "/cancel": (self.cmd_cancel, True),
-            "/reset": (self.cmd_reset, True),
-            "/ralph-cancel": (self.cmd_ralph_cancel, True),
-            "/ralph-stop": (self.cmd_ralph_cancel, True),
-            "/ralph-status": (self.cmd_ralph_status, True),
-            "/peek": (self.cmd_peek, False),
-            "/agent": (self.cmd_agent, False),
-            "/thinking": (self.cmd_thinking, False),
-            "/model": (self.cmd_model, False),
-            "/ralph": (self.cmd_ralph, False),
-        }
+    def _discover_commands(self) -> None:
+        """Find all @command decorated methods and register them."""
+        for name in dir(self):
+            method = getattr(self, name)
+            if callable(method) and hasattr(method, '_command_name'):
+                cmd_name = method._command_name
+                exact = method._command_exact
+                self._commands[cmd_name] = (method, exact)
+                for alias in method._command_aliases:
+                    self._commands[alias] = (method, exact)
 
     async def handle(self, body: str) -> bool:
         """Handle a command. Returns True if command was handled."""
@@ -49,13 +63,15 @@ class CommandHandler:
 
         return False
 
-    async def cmd_kill(self, _body: str) -> bool:
+    @command("/kill")
+    async def kill(self, _body: str) -> bool:
         """End the session."""
         self.bot.send_reply("Ending session. Goodbye!")
         asyncio.ensure_future(self.bot._self_destruct())
         return True
 
-    async def cmd_cancel(self, _body: str) -> bool:
+    @command("/cancel")
+    async def cancel(self, _body: str) -> bool:
         """Cancel current operation."""
         if self.bot.ralph_loop:
             self.bot.ralph_loop.cancel()
@@ -69,7 +85,8 @@ class CommandHandler:
             self.bot.send_reply("Nothing running to cancel.")
         return True
 
-    async def cmd_peek(self, body: str) -> bool:
+    @command("/peek", exact=False)
+    async def peek(self, body: str) -> bool:
         """Show recent output."""
         parts = body.strip().lower().split()
         num_lines = 30
@@ -81,7 +98,8 @@ class CommandHandler:
         await self.bot.peek_output(num_lines)
         return True
 
-    async def cmd_agent(self, body: str) -> bool:
+    @command("/agent", exact=False)
+    async def agent(self, body: str) -> bool:
         """Switch active engine."""
         parts = body.strip().lower().split()
         if len(parts) < 2:
@@ -101,7 +119,8 @@ class CommandHandler:
         self.bot.send_reply(f"Active engine set to {engine}.")
         return True
 
-    async def cmd_thinking(self, body: str) -> bool:
+    @command("/thinking", exact=False)
+    async def thinking(self, body: str) -> bool:
         """Set reasoning mode."""
         parts = body.strip().lower().split()
         if len(parts) < 2 or parts[1] not in ("normal", "high"):
@@ -117,7 +136,8 @@ class CommandHandler:
         self.bot.send_reply(f"Reasoning mode set to {parts[1]}.")
         return True
 
-    async def cmd_model(self, body: str) -> bool:
+    @command("/model", exact=False)
+    async def model(self, body: str) -> bool:
         """Set model ID."""
         parts = body.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
@@ -129,7 +149,8 @@ class CommandHandler:
         self.bot.send_reply(f"Model set to {model_id}.")
         return True
 
-    async def cmd_reset(self, _body: str) -> bool:
+    @command("/reset")
+    async def reset(self, _body: str) -> bool:
         """Reset session context."""
         session = self.bot.sessions.get(self.bot.session_name)
         if session and session.active_engine == "claude":
@@ -139,7 +160,8 @@ class CommandHandler:
         self.bot.send_reply("Session reset.")
         return True
 
-    async def cmd_ralph_cancel(self, _body: str) -> bool:
+    @command("/ralph-cancel", "/ralph-stop")
+    async def ralph_cancel(self, _body: str) -> bool:
         """Cancel Ralph loop."""
         if self.bot.ralph_loop:
             self.bot.ralph_loop.cancel()
@@ -148,7 +170,8 @@ class CommandHandler:
             self.bot.send_reply("No Ralph loop running.")
         return True
 
-    async def cmd_ralph_status(self, _body: str) -> bool:
+    @command("/ralph-status")
+    async def ralph_status(self, _body: str) -> bool:
         """Show Ralph loop status."""
         if self.bot.ralph_loop:
             rl = self.bot.ralph_loop
@@ -172,7 +195,8 @@ class CommandHandler:
                 self.bot.send_reply("No Ralph loops in this session.")
         return True
 
-    async def cmd_ralph(self, body: str) -> bool:
+    @command("/ralph", exact=False)
+    async def ralph(self, body: str) -> bool:
         """Start a Ralph loop."""
         ralph_args = parse_ralph_command(body)
         if ralph_args is None:
@@ -203,5 +227,5 @@ class CommandHandler:
             ralph_loops=self.bot.ralph_loops,
         )
         self.bot.processing = True
-        asyncio.ensure_future(cast(Awaitable[Any], self.bot._run_ralph()))
+        asyncio.ensure_future(cast(Awaitable[Any], self.bot.run_ralph()))
         return True
