@@ -15,7 +15,11 @@ flowchart TB
     subgraph Tailnet["Tailscale Network"]
         subgraph DevBox["Development Machine"]
             XMPP["ejabberd<br/>(XMPP Server)"]
-            Dispatcher["Dispatcher Bot<br/>(oc@...)"]
+            subgraph Orchestrators["Orchestrator Contacts"]
+                CC["cc@...<br/>(Claude Code)"]
+                OC["oc@...<br/>(OpenCode GLM 4.7)"]
+                OCGPT["oc-gpt@...<br/>(OpenCode GPT 5.2)"]
+            end
             Sessions["Session Bots<br/>(task-name@...)"]
             OpenCode["OpenCode CLI"]
             Claude["Claude CLI"]
@@ -23,7 +27,9 @@ flowchart TB
     end
 
     Client <-->|"Tailscale IP"| XMPP
-    XMPP <--> Dispatcher
+    XMPP <--> CC
+    XMPP <--> OC
+    XMPP <--> OCGPT
     XMPP <--> Sessions
     Sessions --> OpenCode
     Sessions --> Claude
@@ -44,13 +50,20 @@ This means:
 
 ## Components
 
-### Dispatcher Bot (`oc@domain`)
+### Orchestrator Contacts
 
-The entry point. Send any message here to create a new session. Handles:
+Multiple orchestrators, each tied to a specific AI engine:
+
+| Contact | Engine | Model |
+|---------|--------|-------|
+| `cc@domain` | Claude Code | Opus |
+| `oc@domain` | OpenCode | GLM 4.7 |
+| `oc-gpt@domain` | OpenCode | GPT 5.2 |
+
+Send any message to an orchestrator to create a new session using that engine. Each orchestrator handles:
 
 - Session creation with auto-generated names from message content
 - Global commands (`/list`, `/kill`, `/recent`, `/help`)
-- Optional integrations (calendar, telegram)
 
 ### Session Bots (`session-name@domain`)
 
@@ -71,7 +84,7 @@ Coordinates all bots:
 
 ## Data Flow
 
-1. **New Session**: Message to dispatcher → slugify name → create XMPP account → spawn SessionBot → process first message
+1. **New Session**: Message to orchestrator (cc/oc/oc-gpt) → slugify name → create XMPP account → spawn SessionBot with engine config → process first message
 
 2. **Continuing Session**: Message to session contact → SessionBot receives → run AI backend → stream response back
 
