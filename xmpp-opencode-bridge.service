@@ -1,0 +1,18 @@
+[Unit]
+Description=XMPP-OpenCode Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/xmpp-opencode-bridge
+ExecStart=/home/user/xmpp-opencode-bridge/run.sh
+Restart=on-failure
+RestartSec=10
+
+# Environment
+Environment=HOME=/home/user
+Environment=PATH=/home/user/.local/share/fnm/node-versions/v22.12.0/installation/bin:/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
