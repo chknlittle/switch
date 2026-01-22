@@ -12,7 +12,7 @@ Designed to run on a dedicated Linux machine (old laptop, mini PC, home server) 
 - **Session persistence**: Resume conversations after restarts
 - **Ralph loops**: Autonomous iteration for long-running tasks
 - **Shell access**: Run commands directly from chat
-- **Local memory vault**: Gitignored notes under `src/memory/`
+- **Local memory vault**: Gitignored notes under `memory/`
 
 ## Quick Start
 

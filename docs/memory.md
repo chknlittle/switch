@@ -5,25 +5,25 @@ runbooks, and operational notes. It is designed for fast filesystem search
 without polluting the repo history.
 
 Location
-- `src/memory/`
+- `memory/`
 - Contents are ignored by git; only `.gitignore` and `.gitkeep` are tracked
 
 Recommended structure
 - Organize by content area to keep searches focused
 - Example:
-  - `src/memory/helius/`
-  - `src/memory/ejabberd/`
-  - `src/memory/moonshot/`
+  - `memory/helius/`
+  - `memory/ejabberd/`
+  - `memory/moonshot/`
 
 How to use
-1. Create a new topic folder if needed under `src/memory/`.
+1. Create a new topic folder if needed under `memory/`.
 2. Add a concise, searchable markdown file.
 3. Prefer one topic per file; name it for what you would search.
 
 Example
 ```bash
-mkdir -p src/memory/infra
-vim src/memory/infra/tailscale-ops.md
+mkdir -p memory/infra
+vim memory/infra/tailscale-ops.md
 ```
 
 Notes

@@ -6,9 +6,10 @@ Send these to the dispatcher bot (`oc@domain`):
 
 | Command | Description |
 |---------|-------------|
-| `<message>` | Create new session with OpenCode (default) |
-| `@cc <message>` | Create new session with Claude |
-| `@oc <message>` | Create new session with OpenCode |
+| `<message>` | Create new session with OpenCode (GLM 4.7, default) |
+| `@cc <message>` | Create new session with Claude Code |
+| `@oc <message>` | Create new session with OpenCode (GLM 4.7) |
+| `@oc gpt <message>` | Create new session with OpenCode (GPT 5.2) |
 | `/list` | Show all sessions |
 | `/recent` | Show 10 most recent sessions with status |
 | `/kill <name>` | End a session and delete XMPP account |
