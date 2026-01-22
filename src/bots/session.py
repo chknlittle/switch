@@ -255,7 +255,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             status = "RUNNING" if self.processing else "IDLE"
             output = f"[{status}] Last {len(lines)} lines:\n" + "\n".join(lines)
             if len(output) > 3500:
-                output = output[:3500] + "\n... (truncated)"
+                output = "... (truncated)\n" + output[-3500:]
             self.send_reply(output)
         except Exception as e:
             self.send_reply(f"Error reading output: {e}")
