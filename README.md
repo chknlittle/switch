@@ -2,6 +2,8 @@
 
 Chat with AI coding assistants from any XMPP client. Each conversation becomes a separate contact, making it easy to manage multiple concurrent sessions from your phone or desktop.
 
+Designed to run on a dedicated Linux machine (old laptop, mini PC, home server) so the AI has real system access to do useful work.
+
 ## Features
 
 - **Multi-session**: Each conversation is a separate XMPP contact
@@ -20,6 +22,10 @@ uv sync
 # Configure
 cp .env.example .env
 # Edit .env with your XMPP server details
+
+# Set up agent instructions (shared between both backends)
+vim ~/AGENTS.md
+ln -s ~/AGENTS.md ~/CLAUDE.md
 
 # Run
 uv run python bridge.py
@@ -52,12 +58,13 @@ You ──▶ XMPP Client ──▶ Dispatcher Bot ──▶ Session Bot ──�
 
 ## Documentation
 
-- [Setup Guide](docs/setup.md) - Installation and configuration
+- [Setup Guide](docs/setup.md) - Hardware, installation, configuration
 - [Commands Reference](docs/commands.md) - All available commands
 - [Architecture](docs/architecture.md) - How the system works
 
 ## Requirements
 
+- Dedicated Linux machine (bare metal preferred)
 - Python 3.11+
 - ejabberd XMPP server
 - OpenCode CLI and/or Claude Code CLI
