@@ -17,7 +17,7 @@ from slixmpp.clientxmpp import ClientXMPP
 def load_env(env_path: Path | None = None) -> None:
     """Load .env file into os.environ. Handles quoted values and spaces."""
     if env_path is None:
-        env_path = Path(__file__).parent / ".env"
+        env_path = Path(__file__).parent.parent / ".env"
 
     if not env_path.exists():
         return
@@ -98,7 +98,9 @@ class BaseXMPPBot(ClientXMPP):
     def connect_to_server(self, server: str, port: int = 5222):
         """Connect with standard settings (unencrypted, no TLS)."""
         self["feature_mechanisms"].unencrypted_plain = True  # type: ignore[attr-defined]
-        self.connect((server, port), disable_starttls=True, use_ssl=False)
+        self.enable_starttls = False
+        self.enable_direct_tls = False
+        self.connect(server, port)
 
     def send_reply(self, text: str, recipient: str | None = None):
         """Send a chat message to recipient."""
