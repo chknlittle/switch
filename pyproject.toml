@@ -1,0 +1,11 @@
+[project]
+name = "xmpp-opencode-bridge"
+version = "0.1.0"
+description = "XMPP bridge for OpenCode and Claude Code sessions"
+requires-python = ">=3.11"
+dependencies = [
+    "slixmpp>=1.8.0",
+]
+
+[tool.uv]
+dev-dependencies = []

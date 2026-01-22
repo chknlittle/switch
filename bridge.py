@@ -91,9 +91,7 @@ except Exception:
     tg_typing = None
 
 # Telegram engagement (for bidirectional mirroring)
-TELEGRAM_PENDING_DIR = Path(__file__).parent / "telegram_pending"
 TELEGRAM_ENGAGEMENT_FILE = TELEGRAM_DIR / "engagement.json"
-TELEGRAM_CANCEL_DIR = TELEGRAM_PENDING_DIR / "cancel"
 
 
 def get_telegram_engagement() -> dict:
@@ -104,16 +102,6 @@ def get_telegram_engagement() -> dict:
         except (json.JSONDecodeError, IOError):
             pass
     return {"session": None, "chat_id": None}
-
-
-def check_cancel_signal(session_name: str) -> bool:
-    """Check if a cancel signal exists for this session and clear it."""
-    TELEGRAM_CANCEL_DIR.mkdir(parents=True, exist_ok=True)
-    cancel_file = TELEGRAM_CANCEL_DIR / f"{session_name}.cancel"
-    if cancel_file.exists():
-        cancel_file.unlink()
-        return True
-    return False
 
 
 async def send_to_telegram(text: str, chat_id: int | None = None) -> bool:
@@ -372,12 +360,6 @@ def create_tmux_session(name: str) -> bool:
     return result.returncode == 0
 
 
-def is_session_locked(name: str) -> bool:
-    """Check if session is being used interactively from terminal."""
-    lock_file = Path(__file__).parent / "locks" / f"{name}.lock"
-    return lock_file.exists()
-
-
 def kill_tmux_session(name: str) -> bool:
     """Kill a tmux session."""
     result = subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
@@ -472,12 +454,6 @@ class OpenCodeRunner:
                 raise RuntimeError("OpenCode process stdout missing")
 
             async for raw_line in stdout:
-                if self.session_name and check_cancel_signal(self.session_name):
-                    log.info(f"Cancel signal detected for {self.session_name}")
-                    self.cancel()
-                    yield ("cancelled", "Cancelled via signal")
-                    return
-
                 line = raw_line.decode().strip()
                 if not line:
                     continue
@@ -660,12 +636,6 @@ class ClaudeRunner:
                 raise RuntimeError("Claude process stdout missing")
 
             async for line in stdout:
-                if self.session_name and check_cancel_signal(self.session_name):
-                    log.info(f"Cancel signal detected for {self.session_name}")
-                    self.cancel()
-                    yield ("cancelled", "Cancelled via signal")
-                    return
-
                 line = line.decode().strip()
                 if not line:
                     continue
@@ -1048,7 +1018,6 @@ class SessionBot(BaseXMPPBot):
         await self["xep_0280"].enable()  # type: ignore[attr-defined]
         self.log.info("Connected")
         self._connected = True
-        self.telegram_poll_task = asyncio.ensure_future(self._poll_telegram_pending())
 
     def is_connected(self) -> bool:
         return getattr(self, "_connected", False)
@@ -1059,77 +1028,6 @@ class SessionBot(BaseXMPPBot):
         if engagement.get("session") == self.session_name:
             return True, engagement.get("chat_id")
         return False, None
-
-    async def _poll_telegram_pending(self):
-        """Poll for pending messages from Telegram."""
-        TELEGRAM_PENDING_DIR.mkdir(exist_ok=True)
-        pending_file = TELEGRAM_PENDING_DIR / f"{self.session_name}.jsonl"
-
-        while True:
-            try:
-                await asyncio.sleep(2)
-
-                if not pending_file.exists():
-                    continue
-
-                content = pending_file.read_text().strip()
-                if not content:
-                    continue
-
-                pending_file.write_text("")
-
-                for line in content.split("\n"):
-                    if not line.strip():
-                        continue
-                    try:
-                        msg = json.loads(line)
-                        sender = msg.get("from", "telegram")
-                        text = msg.get("text", "")
-
-                        if text:
-                            self.log.info(
-                                f"Telegram message from {sender}: {text[:50]}..."
-                            )
-
-                            text_lower = text.strip().lower()
-                            if text_lower in ("/cancel", "/c"):
-                                self.send_reply(
-                                    f"[TG/{sender}] {text}", mirror_to_telegram=False
-                                )
-                                if self.ralph_loop:
-                                    self.ralph_loop.cancel()
-                                    if self.runner:
-                                        self.runner.cancel()
-                                    self.send_reply("Cancelling Ralph loop...")
-                                elif self.runner and self.processing:
-                                    self.runner.cancel()
-                                    self.send_reply("Cancelling current run...")
-                                else:
-                                    self.send_reply("Nothing running to cancel.")
-                                continue
-
-                            self.send_reply(
-                                f"[TG/{sender}] {text}", mirror_to_telegram=False
-                            )
-
-                            if not self.processing:
-                                await self.process_message(
-                                    text, from_telegram=True, telegram_sender=sender
-                                )
-                            else:
-                                self.send_reply(
-                                    f"[Busy - message queued from {sender}]",
-                                    mirror_to_telegram=False,
-                                )
-
-                    except json.JSONDecodeError:
-                        continue
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.log.error(f"Error polling Telegram pending: {e}")
-                await asyncio.sleep(5)
 
     def on_disconnected(self, event):
         self.log.warning("Disconnected, reconnecting...")
@@ -1497,13 +1395,6 @@ class SessionBot(BaseXMPPBot):
 
         if body.startswith("!"):
             await self.run_shell_command(body[1:].strip())
-            return
-
-        if is_session_locked(self.session_name):
-            self.send_reply(
-                "Session in use from terminal. Attach with: tmux attach -t "
-                + self.session_name
-            )
             return
 
         if self.processing:
