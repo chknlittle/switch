@@ -6,12 +6,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sqlite3
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, cast
 
 from src.claude_runner import ClaudeRunner
+from src.db import MessageRepository, RalphLoopRepository, SessionRepository
 from src.helpers import (
     add_roster_subscription,
     append_to_history,
@@ -24,6 +23,8 @@ from src.ralph import RalphLoop, parse_ralph_command
 from src.utils import BaseXMPPBot
 
 if TYPE_CHECKING:
+    import sqlite3
+
     from src.manager import SessionManager
 
 
@@ -35,7 +36,7 @@ class SessionBot(BaseXMPPBot):
         session_name: str,
         jid: str,
         password: str,
-        db: sqlite3.Connection,
+        db: "sqlite3.Connection",
         working_dir: str,
         output_dir: Path,
         xmpp_recipient: str,
@@ -47,6 +48,9 @@ class SessionBot(BaseXMPPBot):
         super().__init__(jid, password, recipient=xmpp_recipient)
         self.session_name = session_name
         self.db = db
+        self.sessions = SessionRepository(db)
+        self.messages = MessageRepository(db)
+        self.ralph_loops = RalphLoopRepository(db)
         self.working_dir = working_dir
         self.output_dir = output_dir
         self.xmpp_recipient = xmpp_recipient
@@ -248,192 +252,11 @@ class SessionBot(BaseXMPPBot):
 
         self.log.info(f"Message{'[scheduled]' if is_scheduled else ''}: {body[:50]}...")
 
-        if not is_scheduled and body.strip().lower() == "/kill":
-            self.send_reply("Ending session. Goodbye!")
-            asyncio.ensure_future(self._self_destruct())
-            return
-
-        if not is_scheduled and body.strip().lower() == "/cancel":
-            if self.ralph_loop:
-                self.ralph_loop.cancel()
-                if self.runner:
-                    self.runner.cancel()
-                self.send_reply("Cancelling Ralph loop...")
-            elif self.runner and self.processing:
-                self.runner.cancel()
-                self.send_reply("Cancelling current run...")
-            else:
-                self.send_reply("Nothing running to cancel.")
-            return
-
-        if not is_scheduled and body.strip().lower().startswith("/peek"):
-            parts = body.strip().split()
-            num_lines = 30
-            if len(parts) > 1:
-                try:
-                    num_lines = int(parts[1])
-                except ValueError:
-                    pass
-            await self.peek_output(num_lines)
-            return
-
-        if not is_scheduled and body.strip().lower().startswith("/agent"):
-            parts = body.strip().split()
-            if len(parts) < 2:
-                self.send_reply("Usage: /agent oc|cc")
+        # Handle commands (only from user, not scheduled)
+        if not is_scheduled:
+            handled = await self._handle_command(body)
+            if handled:
                 return
-            choice = parts[1].lower()
-            engine = None
-            if choice in ("oc", "opencode"):
-                engine = "opencode"
-            elif choice in ("cc", "claude"):
-                engine = "claude"
-            if not engine:
-                self.send_reply("Usage: /agent oc|cc")
-                return
-            self.db.execute(
-                "UPDATE sessions SET active_engine = ? WHERE name = ?",
-                (engine, self.session_name),
-            )
-            self.db.commit()
-            self.send_reply(f"Active engine set to {engine}.")
-            return
-
-        if not is_scheduled and body.strip().lower().startswith("/thinking"):
-            parts = body.strip().split()
-            if len(parts) < 2:
-                self.send_reply("Usage: /thinking normal|high")
-                return
-            mode = parts[1].lower()
-            if mode not in ("normal", "high"):
-                self.send_reply("Usage: /thinking normal|high")
-                return
-            row = self.db.execute(
-                "SELECT active_engine FROM sessions WHERE name = ?",
-                (self.session_name,),
-            ).fetchone()
-            active_engine = row["active_engine"] if row else "opencode"
-            if active_engine != "opencode":
-                self.send_reply("/thinking only applies to OpenCode sessions.")
-                return
-            self.db.execute(
-                "UPDATE sessions SET reasoning_mode = ? WHERE name = ?",
-                (mode, self.session_name),
-            )
-            self.db.commit()
-            self.send_reply(f"Reasoning mode set to {mode}.")
-            return
-
-        if not is_scheduled and body.strip().lower().startswith("/model"):
-            parts = body.strip().split(maxsplit=1)
-            if len(parts) < 2:
-                self.send_reply("Usage: /model <model-id>")
-                return
-            model_id = parts[1].strip()
-            if not model_id:
-                self.send_reply("Usage: /model <model-id>")
-                return
-            self.db.execute(
-                "UPDATE sessions SET model_id = ? WHERE name = ?",
-                (model_id, self.session_name),
-            )
-            self.db.commit()
-            self.send_reply(f"Model set to {model_id}.")
-            return
-
-        if not is_scheduled and body.strip().lower() == "/reset":
-            row = self.db.execute(
-                "SELECT active_engine FROM sessions WHERE name = ?",
-                (self.session_name,),
-            ).fetchone()
-            active_engine = row["active_engine"] if row else "opencode"
-            if active_engine == "claude":
-                self.db.execute(
-                    "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
-                    (self.session_name,),
-                )
-            else:
-                self.db.execute(
-                    "UPDATE sessions SET opencode_session_id = NULL WHERE name = ?",
-                    (self.session_name,),
-                )
-            self.db.commit()
-            self.send_reply("Session reset.")
-            return
-
-        if not is_scheduled and body.strip().lower() in (
-            "/ralph-cancel",
-            "/ralph-stop",
-        ):
-            if self.ralph_loop:
-                self.ralph_loop.cancel()
-                self.send_reply("Ralph loop will stop after current iteration...")
-            else:
-                self.send_reply("No Ralph loop running.")
-            return
-
-        if not is_scheduled and body.strip().lower() == "/ralph-status":
-            if self.ralph_loop:
-                rl = self.ralph_loop
-                max_str = (
-                    str(rl.max_iterations) if rl.max_iterations > 0 else "unlimited"
-                )
-                self.send_reply(
-                    f"Ralph RUNNING\n"
-                    f"Iteration: {rl.current_iteration}/{max_str}\n"
-                    f"Cost so far: ${rl.total_cost:.3f}\n"
-                    f"Promise: {rl.completion_promise or 'none'}"
-                )
-            else:
-                row = self.db.execute(
-                    """
-                    SELECT * FROM ralph_loops
-                    WHERE session_name = ?
-                    ORDER BY started_at DESC LIMIT 1
-                """,
-                    (self.session_name,),
-                ).fetchone()
-                if row:
-                    self.send_reply(
-                        f"Last Ralph: {row['status']}\n"
-                        f"Iterations: {row['current_iteration']}/{row['max_iterations'] or 'unlimited'}\n"
-                        f"Cost: ${row['total_cost']:.3f}"
-                    )
-                else:
-                    self.send_reply("No Ralph loops in this session.")
-            return
-
-        if not is_scheduled and body.strip().lower().startswith("/ralph"):
-            ralph_args = parse_ralph_command(body)
-            if ralph_args is None:
-                self.send_reply(
-                    "Usage: /ralph <prompt> [--max N] [--done 'promise']\n"
-                    "  or:  /ralph <N> <prompt>  (shorthand)\n\n"
-                    "Examples:\n"
-                    "  /ralph 20 Fix all type errors\n"
-                    "  /ralph Refactor auth --max 10 --done 'All tests pass'\n\n"
-                    "Commands:\n"
-                    "  /ralph-status - check progress\n"
-                    "  /ralph-cancel - stop loop"
-                )
-                return
-
-            if self.processing:
-                self.send_reply("Already running. Use /ralph-cancel first.")
-                return
-
-            self.ralph_loop = RalphLoop(
-                self,
-                ralph_args["prompt"],
-                self.working_dir,
-                self.output_dir,
-                max_iterations=ralph_args["max_iterations"],
-                completion_promise=ralph_args["completion_promise"],
-                db=self.db,
-            )
-            self.processing = True
-            asyncio.ensure_future(cast(Awaitable[Any], self._run_ralph()))
-            return
 
         if body.startswith("!"):
             await self.run_shell_command(body[1:].strip())
@@ -455,6 +278,151 @@ class SessionBot(BaseXMPPBot):
             return
 
         await self.process_message(body)
+
+    async def _handle_command(self, body: str) -> bool:
+        """Handle slash commands. Returns True if command was handled."""
+        cmd = body.strip().lower()
+
+        if cmd == "/kill":
+            self.send_reply("Ending session. Goodbye!")
+            asyncio.ensure_future(self._self_destruct())
+            return True
+
+        if cmd == "/cancel":
+            if self.ralph_loop:
+                self.ralph_loop.cancel()
+                if self.runner:
+                    self.runner.cancel()
+                self.send_reply("Cancelling Ralph loop...")
+            elif self.runner and self.processing:
+                self.runner.cancel()
+                self.send_reply("Cancelling current run...")
+            else:
+                self.send_reply("Nothing running to cancel.")
+            return True
+
+        if cmd.startswith("/peek"):
+            parts = cmd.split()
+            num_lines = 30
+            if len(parts) > 1:
+                try:
+                    num_lines = int(parts[1])
+                except ValueError:
+                    pass
+            await self.peek_output(num_lines)
+            return True
+
+        if cmd.startswith("/agent"):
+            parts = cmd.split()
+            if len(parts) < 2:
+                self.send_reply("Usage: /agent oc|cc")
+                return True
+            choice = parts[1].lower()
+            engine = {"oc": "opencode", "opencode": "opencode",
+                      "cc": "claude", "claude": "claude"}.get(choice)
+            if not engine:
+                self.send_reply("Usage: /agent oc|cc")
+                return True
+            self.sessions.update_engine(self.session_name, engine)
+            self.send_reply(f"Active engine set to {engine}.")
+            return True
+
+        if cmd.startswith("/thinking"):
+            parts = cmd.split()
+            if len(parts) < 2 or parts[1] not in ("normal", "high"):
+                self.send_reply("Usage: /thinking normal|high")
+                return True
+            session = self.sessions.get(self.session_name)
+            if session and session.active_engine != "opencode":
+                self.send_reply("/thinking only applies to OpenCode sessions.")
+                return True
+            self.sessions.update_reasoning_mode(self.session_name, parts[1])
+            self.send_reply(f"Reasoning mode set to {parts[1]}.")
+            return True
+
+        if cmd.startswith("/model"):
+            parts = body.strip().split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                self.send_reply("Usage: /model <model-id>")
+                return True
+            self.sessions.update_model(self.session_name, parts[1].strip())
+            self.send_reply(f"Model set to {parts[1].strip()}.")
+            return True
+
+        if cmd == "/reset":
+            session = self.sessions.get(self.session_name)
+            if session and session.active_engine == "claude":
+                self.sessions.reset_claude_session(self.session_name)
+            else:
+                self.sessions.reset_opencode_session(self.session_name)
+            self.send_reply("Session reset.")
+            return True
+
+        if cmd in ("/ralph-cancel", "/ralph-stop"):
+            if self.ralph_loop:
+                self.ralph_loop.cancel()
+                self.send_reply("Ralph loop will stop after current iteration...")
+            else:
+                self.send_reply("No Ralph loop running.")
+            return True
+
+        if cmd == "/ralph-status":
+            if self.ralph_loop:
+                rl = self.ralph_loop
+                max_str = str(rl.max_iterations) if rl.max_iterations > 0 else "unlimited"
+                self.send_reply(
+                    f"Ralph RUNNING\n"
+                    f"Iteration: {rl.current_iteration}/{max_str}\n"
+                    f"Cost so far: ${rl.total_cost:.3f}\n"
+                    f"Promise: {rl.completion_promise or 'none'}"
+                )
+            else:
+                loop = self.ralph_loops.get_latest(self.session_name)
+                if loop:
+                    max_str = str(loop.max_iterations) if loop.max_iterations else "unlimited"
+                    self.send_reply(
+                        f"Last Ralph: {loop.status}\n"
+                        f"Iterations: {loop.current_iteration}/{max_str}\n"
+                        f"Cost: ${loop.total_cost:.3f}"
+                    )
+                else:
+                    self.send_reply("No Ralph loops in this session.")
+            return True
+
+        if cmd.startswith("/ralph"):
+            ralph_args = parse_ralph_command(body)
+            if ralph_args is None:
+                self.send_reply(
+                    "Usage: /ralph <prompt> [--max N] [--done 'promise']\n"
+                    "  or:  /ralph <N> <prompt>  (shorthand)\n\n"
+                    "Examples:\n"
+                    "  /ralph 20 Fix all type errors\n"
+                    "  /ralph Refactor auth --max 10 --done 'All tests pass'\n\n"
+                    "Commands:\n"
+                    "  /ralph-status - check progress\n"
+                    "  /ralph-cancel - stop loop"
+                )
+                return True
+
+            if self.processing:
+                self.send_reply("Already running. Use /ralph-cancel first.")
+                return True
+
+            self.ralph_loop = RalphLoop(
+                self,
+                ralph_args["prompt"],
+                self.working_dir,
+                self.output_dir,
+                max_iterations=ralph_args["max_iterations"],
+                completion_promise=ralph_args["completion_promise"],
+                sessions=self.sessions,
+                ralph_loops=self.ralph_loops,
+            )
+            self.processing = True
+            asyncio.ensure_future(cast(Awaitable[Any], self._run_ralph()))
+            return True
+
+        return False
 
     async def _self_destruct(self):
         await asyncio.sleep(1)
@@ -500,14 +468,12 @@ class SessionBot(BaseXMPPBot):
 
         create_tmux_session(name, self.working_dir)
 
-        now = datetime.now().isoformat()
-        self.db.execute(
-            """INSERT INTO sessions
-               (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active, model_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (name, jid, password, name, now, now, "openai/gpt-5.2-codex"),
+        self.sessions.create(
+            name=name,
+            xmpp_jid=jid,
+            xmpp_password=password,
+            tmux_name=name,
         )
-        self.db.commit()
 
         bot = await self.manager.start_session_bot(name, jid, password)
         if bot:
@@ -529,57 +495,31 @@ class SessionBot(BaseXMPPBot):
         self.send_typing()
 
         try:
-            row = self.db.execute(
-                "SELECT * FROM sessions WHERE name = ?",
-                (self.session_name,),
-            ).fetchone()
-            claude_session_id = row["claude_session_id"] if row else None
-            opencode_session_id = row["opencode_session_id"] if row else None
-            active_engine = row["active_engine"] if row else "opencode"
-            opencode_agent = row["opencode_agent"] if row else "bridge"
-            model_id = row["model_id"] if row else "glm_gguf/glm-4.7-flash-q8"
+            session = self.sessions.get(self.session_name)
+            if not session:
+                self.send_reply("Session not found in database.")
+                return
 
-            self.db.execute(
-                "UPDATE sessions SET last_active = ? WHERE name = ?",
-                (datetime.now().isoformat(), self.session_name),
-            )
-            self.db.commit()
-
-            append_to_history(body, self.working_dir, claude_session_id)
+            self.sessions.update_last_active(self.session_name)
+            append_to_history(body, self.working_dir, session.claude_session_id)
             log_activity(body, session=self.session_name, source="xmpp")
-
-            self.db.execute(
-                """INSERT INTO session_messages (session_name, role, content, engine, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    self.session_name,
-                    "user",
-                    body,
-                    active_engine,
-                    datetime.now().isoformat(),
-                ),
-            )
-            self.db.commit()
+            self.messages.add(self.session_name, "user", body, session.active_engine)
 
             response_parts: list[str] = []
             tool_summaries: list[str] = []
             last_progress_at = 0
 
-            if active_engine == "claude":
+            if session.active_engine == "claude":
                 self.runner = ClaudeRunner(
                     self.working_dir,
                     self.output_dir,
                     session_name=self.session_name,
                 )
                 async for event_type, content in self.runner.run(
-                    body, claude_session_id
+                    body, session.claude_session_id
                 ):
-                    if event_type == "session_id" and self.db:
-                        self.db.execute(
-                            "UPDATE sessions SET claude_session_id = ? WHERE name = ?",
-                            (content, self.session_name),
-                        )
-                        self.db.commit()
+                    if event_type == "session_id":
+                        self.sessions.update_claude_session_id(self.session_name, content)
                     elif event_type == "text":
                         response_parts = [content]
                     elif event_type == "tool":
@@ -601,18 +541,12 @@ class SessionBot(BaseXMPPBot):
                         parts.append(content)
                         response = "\n\n".join(parts)
                         self.send_reply(response)
-                        self.db.execute(
-                            """INSERT INTO session_messages (session_name, role, content, engine, created_at)
-                               VALUES (?, ?, ?, ?, ?)""",
-                            (
-                                self.session_name,
-                                "assistant",
-                                response_parts[-1] if response_parts else "",
-                                active_engine,
-                                datetime.now().isoformat(),
-                            ),
+                        self.messages.add(
+                            self.session_name,
+                            "assistant",
+                            response_parts[-1] if response_parts else "",
+                            session.active_engine,
                         )
-                        self.db.commit()
                     elif event_type == "error":
                         self.send_reply(f"Error: {content}")
                     elif event_type == "cancelled":
@@ -623,21 +557,17 @@ class SessionBot(BaseXMPPBot):
                     self.working_dir,
                     self.output_dir,
                     session_name=self.session_name,
-                    model=model_id,
-                    reasoning_mode=row["reasoning_mode"] if row else "normal",
-                    agent=opencode_agent,
+                    model=session.model_id,
+                    reasoning_mode=session.reasoning_mode,
+                    agent=session.opencode_agent,
                 )
                 accumulated = ""
                 oc_runner = self.runner
                 async for event_type, content in oc_runner.run(
-                    body, opencode_session_id
+                    body, session.opencode_session_id
                 ):
-                    if event_type == "session_id" and self.db:
-                        self.db.execute(
-                            "UPDATE sessions SET opencode_session_id = ? WHERE name = ?",
-                            (content, self.session_name),
-                        )
-                        self.db.commit()
+                    if event_type == "session_id":
+                        self.sessions.update_opencode_session_id(self.session_name, content)
                     elif event_type == "text":
                         if isinstance(content, str):
                             accumulated += content
@@ -670,18 +600,12 @@ class SessionBot(BaseXMPPBot):
                         parts.append(stats)
                         response = "\n\n".join(parts)
                         self.send_reply(response)
-                        self.db.execute(
-                            """INSERT INTO session_messages (session_name, role, content, engine, created_at)
-                               VALUES (?, ?, ?, ?, ?)""",
-                            (
-                                self.session_name,
-                                "assistant",
-                                response_parts[-1] if response_parts else "",
-                                active_engine,
-                                datetime.now().isoformat(),
-                            ),
+                        self.messages.add(
+                            self.session_name,
+                            "assistant",
+                            response_parts[-1] if response_parts else "",
+                            session.active_engine,
                         )
-                        self.db.commit()
                     elif event_type == "error":
                         self.send_reply(f"Error: {content}")
                     elif event_type == "cancelled":

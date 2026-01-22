@@ -5,11 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
-from datetime import datetime
-from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Coroutine
 
+from src.db import SessionRepository
 from src.helpers import (
     add_roster_subscription,
     create_tmux_session,
@@ -19,6 +17,8 @@ from src.helpers import (
 from src.utils import BaseXMPPBot
 
 if TYPE_CHECKING:
+    import sqlite3
+
     from src.manager import SessionManager
 
 
@@ -35,7 +35,7 @@ class DispatcherBot(BaseXMPPBot):
         self,
         jid: str,
         password: str,
-        db: sqlite3.Connection,
+        db: "sqlite3.Connection",
         working_dir: str,
         xmpp_recipient: str,
         xmpp_domain: str,
@@ -48,6 +48,7 @@ class DispatcherBot(BaseXMPPBot):
     ):
         super().__init__(jid, password)
         self.db = db
+        self.sessions = SessionRepository(db)
         self.working_dir = working_dir
         self.xmpp_recipient = xmpp_recipient
         self.xmpp_domain = xmpp_domain
@@ -56,9 +57,18 @@ class DispatcherBot(BaseXMPPBot):
         self.engine = engine
         self.opencode_agent = opencode_agent
         self.label = label
+
         self.add_event_handler("session_start", self.on_start)
         self.add_event_handler("message", self.on_message)
         self.add_event_handler("disconnected", self.on_disconnected)
+
+        # Command dispatch table
+        self._commands: dict[str, Callable[[str], Coroutine]] = {
+            "/list": self._cmd_list,
+            "/kill": self._cmd_kill,
+            "/recent": self._cmd_recent,
+            "/help": self._cmd_help,
+        }
 
     async def on_start(self, event):
         self.send_presence()
@@ -76,28 +86,23 @@ class DispatcherBot(BaseXMPPBot):
 
     async def on_message(self, msg):
         try:
-            if msg["type"] not in ("chat", "normal"):
-                return
-            if not msg["body"]:
+            if msg["type"] not in ("chat", "normal") or not msg["body"]:
                 return
 
             sender = str(msg["from"].bare)
             dispatcher_bare = str(self.boundjid.bare)
             sender_user = sender.split("@")[0]
-            if (
-                sender != self.xmpp_recipient
-                and sender != dispatcher_bare
-                and not sender_user.startswith("switch-loopback-")
+
+            # Only accept from recipient, self, or loopback
+            if not (
+                sender == self.xmpp_recipient
+                or sender == dispatcher_bare
+                or sender_user.startswith("switch-loopback-")
             ):
                 return
 
-            reply_recipient = (
-                sender if sender_user.startswith("switch-loopback-") else None
-            )
-
-            reply_to = (
-                sender if sender_user.startswith("switch-loopback-") else self.xmpp_recipient
-            )
+            is_loopback = sender_user.startswith("switch-loopback-")
+            reply_to = sender if is_loopback else self.xmpp_recipient
 
             body = msg["body"].strip()
             if body.startswith("@"):
@@ -105,98 +110,94 @@ class DispatcherBot(BaseXMPPBot):
 
             self.log.info(f"Dispatcher received: {body[:50]}...")
 
+            # Handle commands
             if body.startswith("/"):
-                if reply_recipient:
+                if is_loopback:
                     self.send_reply(
                         "Loopback only supports session creation messages.",
-                        recipient=reply_recipient,
+                        recipient=reply_to,
                     )
                     return
-                await self.handle_command(body)
+                await self._dispatch_command(body)
                 return
 
+            # Create session
             await self.create_session(body)
-            if reply_recipient:
-                self.send_reply(
-                    f"Dispatcher received: {body}", recipient=reply_recipient
-                )
+            if is_loopback:
+                self.send_reply(f"Dispatcher received: {body}", recipient=reply_to)
+
         except Exception as exc:
             self.log.exception("Dispatcher error")
             self.send_reply(f"Error: {exc}", recipient=self.xmpp_recipient)
 
-    async def handle_command(self, body: str):
+    async def _dispatch_command(self, body: str) -> None:
+        """Dispatch command to appropriate handler."""
         parts = body.split(maxsplit=1)
         cmd = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
 
-        if cmd == "/list":
-            rows = self.db.execute(
-                "SELECT name, last_active FROM sessions ORDER BY last_active DESC LIMIT 15"
-            ).fetchall()
-            if rows:
-                lines = ["Sessions (message the contact directly to continue):"]
-                for row in rows:
-                    lines.append(f"  {row['name']}@{self.xmpp_domain}")
-                self.send_reply("\n".join(lines), recipient=self.xmpp_recipient)
-            else:
-                self.send_reply(
-                    "No sessions yet. Send a message to start one!",
-                    recipient=self.xmpp_recipient,
-                )
-            return
+        handler = self._commands.get(cmd)
+        if handler:
+            await handler(arg)
+        else:
+            self.send_reply(f"Unknown: {cmd}. Try /help", recipient=self.xmpp_recipient)
 
-        if cmd == "/kill":
-            if not arg:
-                self.send_reply("Usage: /kill <session-name>", recipient=self.xmpp_recipient)
-                return
-            if not self.manager:
-                self.send_reply(
-                    "Session manager unavailable.", recipient=self.xmpp_recipient
-                )
-                return
-            await self.manager.kill_session(arg)
-            self.send_reply(f"Killed: {arg}", recipient=self.xmpp_recipient)
-            return
-
-        if cmd == "/recent":
-            rows = self.db.execute(
-                """SELECT name, status, last_active, created_at
-                   FROM sessions ORDER BY last_active DESC LIMIT 10"""
-            ).fetchall()
-            if rows:
-                lines = ["Recent sessions:"]
-                for row in rows:
-                    status = row["status"] or "active"
-                    last = row["last_active"][5:16] if row["last_active"] else "?"
-                    lines.append(f"  {row['name']} [{status}] {last}")
-                self.send_reply("\n".join(lines), recipient=self.xmpp_recipient)
-            else:
-                self.send_reply("No sessions yet.", recipient=self.xmpp_recipient)
-            return
-
-        if cmd == "/help":
+    async def _cmd_list(self, _arg: str) -> None:
+        """List all sessions."""
+        sessions = self.sessions.list_recent(15)
+        if sessions:
+            lines = ["Sessions (message the contact directly to continue):"]
+            lines.extend(f"  {s.name}@{self.xmpp_domain}" for s in sessions)
+            self.send_reply("\n".join(lines), recipient=self.xmpp_recipient)
+        else:
             self.send_reply(
-                f"Send any message to start a new {self.label} session.\n"
-                "Each session appears as a separate contact.\n\n"
-                "Orchestrators:\n"
-                "  cc@ - Claude Code\n"
-                "  oc@ - OpenCode (GLM 4.7)\n"
-                "  oc-gpt@ - OpenCode (GPT 5.2)\n\n"
-                "Commands:\n"
-                "  /list - show all sessions\n"
-                "  /recent - 10 most recent with status\n"
-                "  /kill <name> - end a session\n"
-                "  /help - this message",
+                "No sessions yet. Send a message to start one!",
                 recipient=self.xmpp_recipient,
             )
-            return
 
-        self.send_reply(f"Unknown: {cmd}. Try /help", recipient=self.xmpp_recipient)
+    async def _cmd_kill(self, arg: str) -> None:
+        """Kill a session."""
+        if not arg:
+            self.send_reply("Usage: /kill <session-name>", recipient=self.xmpp_recipient)
+            return
+        if not self.manager:
+            self.send_reply("Session manager unavailable.", recipient=self.xmpp_recipient)
+            return
+        await self.manager.kill_session(arg)
+        self.send_reply(f"Killed: {arg}", recipient=self.xmpp_recipient)
+
+    async def _cmd_recent(self, _arg: str) -> None:
+        """Show recent sessions with status."""
+        sessions = self.sessions.list_recent(10)
+        if sessions:
+            lines = ["Recent sessions:"]
+            for s in sessions:
+                last = s.last_active[5:16] if s.last_active else "?"
+                lines.append(f"  {s.name} [{s.status}] {last}")
+            self.send_reply("\n".join(lines), recipient=self.xmpp_recipient)
+        else:
+            self.send_reply("No sessions yet.", recipient=self.xmpp_recipient)
+
+    async def _cmd_help(self, _arg: str) -> None:
+        """Show help message."""
+        self.send_reply(
+            f"Send any message to start a new {self.label} session.\n"
+            "Each session appears as a separate contact.\n\n"
+            "Orchestrators:\n"
+            "  cc@ - Claude Code\n"
+            "  oc@ - OpenCode (GLM 4.7)\n"
+            "  oc-gpt@ - OpenCode (GPT 5.2)\n\n"
+            "Commands:\n"
+            "  /list - show all sessions\n"
+            "  /recent - 10 most recent with status\n"
+            "  /kill <name> - end a session\n"
+            "  /help - this message",
+            recipient=self.xmpp_recipient,
+        )
 
     async def create_session(self, first_message: str):
         """Create a new session and send first message to the engine."""
         self.send_typing()
-
         message = first_message.strip()
 
         base_name = slugify(message or first_message)
@@ -226,29 +227,25 @@ class DispatcherBot(BaseXMPPBot):
 
         create_tmux_session(name, self.working_dir)
 
-        now = datetime.now().isoformat()
         model_id = (
             "openai/gpt-5.2-codex"
             if self.opencode_agent == "bridge-gpt"
             else "glm_gguf/glm-4.7-flash-q8"
         )
-        self.db.execute(
-            """INSERT INTO sessions
-               (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active, model_id, opencode_agent)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, jid, password, name, now, now, model_id, self.opencode_agent),
+        self.sessions.create(
+            name=name,
+            xmpp_jid=jid,
+            xmpp_password=password,
+            tmux_name=name,
+            model_id=model_id,
+            opencode_agent=self.opencode_agent or "bridge",
+            active_engine=self.engine,
         )
-        self.db.commit()
-
-        self.db.execute(
-            "UPDATE sessions SET active_engine = ? WHERE name = ?",
-            (self.engine, name),
-        )
-        self.db.commit()
 
         if not self.manager:
             self.send_reply("Session manager unavailable.", recipient=self.xmpp_recipient)
             return
+
         bot = await self.manager.start_session_bot(name, jid, password)
         if bot:
             for _ in range(50):

@@ -1,28 +1,32 @@
 #!/usr/bin/env python3
 """Ralph autonomous iteration loop for XMPP bridge."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
 import shlex
-import sqlite3
-from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.claude_runner import ClaudeRunner
 
+if TYPE_CHECKING:
+    from src.db import RalphLoopRepository, SessionRepository
+
 
 def parse_ralph_command(body: str) -> dict | None:
-    """
-    Parse /ralph command into components.
+    """Parse /ralph command into components.
 
     Formats supported:
       /ralph <prompt> --max <N> --done "<promise>"
       /ralph <N> <prompt>  (shorthand: first number is max iterations)
       /ralph <prompt>  (infinite loop - dangerous!)
 
-    Returns dict with: prompt, max_iterations, completion_promise
-    Or None if not a ralph command.
+    Returns:
+        Dict with: prompt, max_iterations, completion_promise
+        Or None if not a ralph command.
     """
     if not body.lower().startswith("/ralph"):
         return None
@@ -85,7 +89,8 @@ class RalphLoop:
         output_dir: Path,
         max_iterations: int = 0,
         completion_promise: str | None = None,
-        db: sqlite3.Connection | None = None,
+        sessions: "SessionRepository | None" = None,
+        ralph_loops: "RalphLoopRepository | None" = None,
     ):
         self.session_bot = session_bot
         self.prompt = prompt
@@ -93,7 +98,8 @@ class RalphLoop:
         self.output_dir = output_dir
         self.max_iterations = max_iterations
         self.completion_promise = completion_promise
-        self.db = db
+        self.sessions = sessions
+        self.ralph_loops = ralph_loops
         self.current_iteration = 0
         self.total_cost = 0.0
         self.cancelled = False
@@ -102,25 +108,14 @@ class RalphLoop:
 
     def _save_state(self, status: str = "running"):
         """Save loop state to database."""
-        if not self.db or not self.loop_id:
+        if not self.ralph_loops or not self.loop_id:
             return
-        self.db.execute(
-            """
-            UPDATE ralph_loops
-            SET current_iteration = ?, total_cost = ?, status = ?,
-                finished_at = CASE WHEN ? != 'running' THEN ? ELSE NULL END
-            WHERE id = ?
-        """,
-            (
-                self.current_iteration,
-                self.total_cost,
-                status,
-                status,
-                datetime.now().isoformat(),
-                self.loop_id,
-            ),
+        self.ralph_loops.update_progress(
+            self.loop_id,
+            self.current_iteration,
+            self.total_cost,
+            status,
         )
-        self.db.commit()
 
     def cancel(self):
         """Signal the loop to stop after current iteration."""
@@ -129,23 +124,13 @@ class RalphLoop:
 
     async def run(self):
         """Run the autonomous loop."""
-        if self.db:
-            cursor = self.db.execute(
-                """
-                INSERT INTO ralph_loops
-                (session_name, prompt, completion_promise, max_iterations, started_at)
-                VALUES (?, ?, ?, ?, ?)
-            """,
-                (
-                    self.session_bot.session_name,
-                    self.prompt,
-                    self.completion_promise,
-                    self.max_iterations,
-                    datetime.now().isoformat(),
-                ),
+        if self.ralph_loops:
+            self.loop_id = self.ralph_loops.create(
+                self.session_bot.session_name,
+                self.prompt,
+                self.max_iterations,
+                self.completion_promise,
             )
-            self.loop_id = cursor.lastrowid
-            self.db.commit()
 
         max_str = str(self.max_iterations) if self.max_iterations > 0 else "unlimited"
         promise_str = (
@@ -201,15 +186,12 @@ class RalphLoop:
             )
             self.session_bot.runner = runner
 
-            row = (
-                self.db.execute(
-                    "SELECT claude_session_id FROM sessions WHERE name = ?",
-                    (self.session_bot.session_name,),
-                ).fetchone()
-                if self.db
-                else None
-            )
-            claude_session_id = row["claude_session_id"] if row else None
+            # Get current session's claude_session_id
+            claude_session_id = None
+            if self.sessions:
+                session = self.sessions.get(self.session_bot.session_name)
+                if session:
+                    claude_session_id = session.claude_session_id
 
             response_text = ""
             iteration_cost = 0.0
@@ -219,12 +201,10 @@ class RalphLoop:
                 async for event_type, content in runner.run(
                     full_prompt, claude_session_id
                 ):
-                    if event_type == "session_id" and self.db:
-                        self.db.execute(
-                            "UPDATE sessions SET claude_session_id = ? WHERE name = ?",
-                            (content, self.session_bot.session_name),
+                    if event_type == "session_id" and self.sessions:
+                        self.sessions.update_claude_session_id(
+                            self.session_bot.session_name, content
                         )
-                        self.db.commit()
                     elif event_type == "text":
                         response_text = content
                     elif event_type == "tool":

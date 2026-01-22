@@ -6,9 +6,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 
+from src.db import SessionRepository
 from src.dispatcher import DispatcherBot
 from src.helpers import (
     add_roster_subscription,
@@ -38,6 +38,7 @@ class SessionManager:
         dispatchers_config: dict,
     ):
         self.db = db
+        self.sessions = SessionRepository(db)
         self.working_dir = working_dir
         self.output_dir = output_dir
         self.xmpp_server = xmpp_server
@@ -45,7 +46,7 @@ class SessionManager:
         self.xmpp_recipient = xmpp_recipient
         self.ejabberd_ctl = ejabberd_ctl
         self.dispatchers_config = dispatchers_config
-        self.sessions: dict[str, SessionBot] = {}
+        self.session_bots: dict[str, SessionBot] = {}
         self.dispatchers: dict[str, DispatcherBot] = {}
         self.loop = asyncio.get_event_loop()
 
@@ -65,7 +66,7 @@ class SessionManager:
             manager=self,
         )
         bot.connect_to_server(self.xmpp_server)
-        self.sessions[name] = bot
+        self.session_bots[name] = bot
         return bot
 
     async def create_session(self, message: str):
@@ -90,14 +91,12 @@ class SessionManager:
 
         create_tmux_session(name, self.working_dir)
 
-        now = datetime.now().isoformat()
-        self.db.execute(
-            """INSERT INTO sessions
-               (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active, model_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (name, jid, password, name, now, now, "openai/gpt-5.2-codex"),
+        self.sessions.create(
+            name=name,
+            xmpp_jid=jid,
+            xmpp_password=password,
+            tmux_name=name,
         )
-        self.db.commit()
 
         bot = await self.start_session_bot(name, jid, password)
         if bot:
@@ -113,25 +112,20 @@ class SessionManager:
 
     async def kill_session(self, name: str) -> bool:
         """Kill a session and cleanup."""
-        row = self.db.execute(
-            "SELECT xmpp_jid, xmpp_password, status FROM sessions WHERE name = ?",
-            (name,),
-        ).fetchone()
-
-        if not row:
+        session = self.sessions.get(name)
+        if not session:
             return False
 
-        if row["status"] == "closed":
+        if session.status == "closed":
             return True
 
-        username = row["xmpp_jid"].split("@")[0]
+        username = session.xmpp_jid.split("@")[0]
         delete_xmpp_account(username, self.ejabberd_ctl, self.xmpp_domain, log)
         kill_tmux_session(name)
 
-        self.db.execute("UPDATE sessions SET status = 'closed' WHERE name = ?", (name,))
-        self.db.commit()
-        if name in self.sessions:
-            del self.sessions[name]
+        self.sessions.close(name)
+        if name in self.session_bots:
+            del self.session_bots[name]
         return True
 
     async def start_dispatchers(self):
@@ -156,11 +150,9 @@ class SessionManager:
 
     async def restore_sessions(self):
         """Restore existing sessions from DB on startup."""
-        rows = self.db.execute(
-            "SELECT name, xmpp_jid, xmpp_password FROM sessions WHERE status = 'active'"
-        ).fetchall()
-        for row in rows:
+        active_sessions = self.sessions.list_active()
+        for session in active_sessions:
             await self.start_session_bot(
-                row["name"], row["xmpp_jid"], row["xmpp_password"]
+                session.name, session.xmpp_jid, session.xmpp_password
             )
-        log.info(f"Started {len(rows)} existing session(s)")
+        log.info(f"Started {len(active_sessions)} existing session(s)")

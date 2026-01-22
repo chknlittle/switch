@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Helper functions for XMPP bridge."""
 
+from __future__ import annotations
+
 import json
-import os
 import re
 import secrets
 import sqlite3
@@ -81,16 +82,22 @@ def register_unique_account(
     log,
     max_attempts: int = 5,
 ) -> tuple[str, str, str] | None:
-    """Register a unique XMPP account, retrying on conflicts."""
+    """Register a unique XMPP account, retrying on conflicts.
+
+    Note: This function still takes a raw db connection for backwards
+    compatibility with code that hasn't been migrated to repositories yet.
+    """
+    # Import here to avoid circular imports
+    from src.db import SessionRepository
+
+    sessions = SessionRepository(db)
+
     for idx in range(max_attempts):
         suffix = "" if idx == 0 else f"-{idx + 1}"
         trim_len = max(1, 20 - len(suffix))
         candidate = base_name[:trim_len].rstrip("-") + suffix
 
-        exists = db.execute(
-            "SELECT 1 FROM sessions WHERE name = ?", (candidate,)
-        ).fetchone()
-        if exists:
+        if sessions.exists(candidate):
             continue
 
         password = secrets.token_urlsafe(16)
