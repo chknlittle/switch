@@ -154,12 +154,12 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
     async def on_message(self, msg):
         try:
-            await self._handle_message(msg)
+            await self._handle_session_message(msg)
         except Exception:
             self.log.exception("Session message error")
             self.send_reply("Error handling message")
 
-    async def _handle_message(self, msg):
+    async def _handle_session_message(self, msg):
         if msg["type"] not in ("chat", "normal") or not msg["body"]:
             return
 
