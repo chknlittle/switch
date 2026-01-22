@@ -4,6 +4,8 @@ Chat with AI coding assistants from any XMPP client. Each conversation becomes a
 
 Designed to run on a dedicated Linux machine (old laptop, mini PC, home server) so the AI has real system access to do useful work.
 
+Switch is the calm center for a swarm of agents. Spin up multiple sessions at once, let them talk to each other, and keep every thread portable across phone and desktop. Your sessions are not tied to a single provider, so you keep the flexibility of multiple backends while still getting the muscle of agent harnesses. It is simple open source software tied together with the power of SOTA when desired.
+
 ## Features
 
 - **Multi-session**: Each conversation is a separate XMPP contact

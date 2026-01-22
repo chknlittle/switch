@@ -8,7 +8,7 @@
       "default": true,
       "permission": "allow",
       "options": {
-        "reasoning": "normal"
+        "reasoning": "high"
       },
       "tools": {
         "bash": true,
