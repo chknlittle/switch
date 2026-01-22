@@ -1,55 +1,68 @@
-# XMPP OpenCode Bridge
+# XMPP-OpenCode Bridge
 
-XMPP bridge that mirrors the existing xmpp bridge but can route sessions to
-OpenCode or Claude CLI.
+Chat with AI coding assistants from any XMPP client. Each conversation becomes a separate contact, making it easy to manage multiple concurrent sessions from your phone or desktop.
 
-## Setup
+## Features
 
-1. Copy env
+- **Multi-session**: Each conversation is a separate XMPP contact
+- **Multiple backends**: Switch between OpenCode and Claude Code
+- **Mobile-friendly**: Works with any XMPP client (Conversations, Gajim, Dino, etc.)
+- **Session persistence**: Resume conversations after restarts
+- **Ralph loops**: Autonomous iteration for long-running tasks
+- **Shell access**: Run commands directly from chat
+
+## Quick Start
 
 ```bash
+# Install dependencies
+uv sync
+
+# Configure
 cp .env.example .env
+# Edit .env with your XMPP server details
+
+# Run
+uv run python bridge.py
 ```
 
-2. Create the dispatcher account once
+Send a message to `oc@your.server` to create your first session.
 
-```bash
-ssh user@your.xmpp.server "/path/to/ejabberdctl register tx-oc your.xmpp.server <password>"
+## How It Works
+
+```
+You ──▶ XMPP Client ──▶ Dispatcher Bot ──▶ Session Bot ──▶ AI Backend
+                            │                   │
+                            │                   ├── OpenCode CLI
+                            │                   └── Claude Code CLI
+                            │
+                            └── Creates new session contacts dynamically
 ```
 
-3. Start the service
+## Basic Usage
 
-```bash
-./start.sh
-```
+| Action | Command |
+|--------|---------|
+| New session (OpenCode) | Send message to `oc@...` |
+| New session (Claude) | `@cc <message>` to dispatcher |
+| Switch to Claude | `/agent cc` in session |
+| Switch to OpenCode | `/agent oc` in session |
+| Cancel current run | `/cancel` |
+| Run shell command | `!git status` |
+| List sessions | `/list` to dispatcher |
 
-## Commands
+## Documentation
 
-- Send any message to `oc@<server>` to spawn a new session.
-- `/agent oc|cc` switches engines (OpenCode vs Claude).
-- `/model <id>` sets OpenCode model id (ex: `openai/gpt-5.2-codex`).
-- `/thinking normal|high` sets OpenCode reasoning mode.
-- `/reset` clears current engine session id.
-- `/peek [N]` shows last output lines (min 100).
-- `/cancel` aborts active run.
-- `!<command>` runs a shell command.
+- [Setup Guide](docs/setup.md) - Installation and configuration
+- [Commands Reference](docs/commands.md) - All available commands
+- [Architecture](docs/architecture.md) - How the system works
 
-## Tmux Sessions
+## Requirements
 
-Each session creates a tmux window that tails the session log. Attach with:
+- Python 3.11+
+- ejabberd XMPP server
+- OpenCode CLI and/or Claude Code CLI
+- tmux
 
-```bash
-tmux attach -t <session-name>
-```
+## License
 
-## Skills
-
-Skills are tracked in this repo under `.claude/skills/` so both OpenCode and
-Claude sessions can share the same playbooks.
-
-Recommended setup:
-
-```bash
-ln -s /home/user/xmpp-opencode-bridge/.claude/skills /home/user/.claude/skills
-```
-```
+MIT
