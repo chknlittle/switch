@@ -422,9 +422,7 @@ class OpenCodeRunner:
 
         if self.output_file:
             with open(self.output_file, "a") as f:
-                f.write(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n"
-                )
+                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n")
 
         start_time = datetime.now()
         tool_count = 0
@@ -616,9 +614,7 @@ class ClaudeRunner:
 
         if self.output_file:
             with open(self.output_file, "a") as f:
-                f.write(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n"
-                )
+                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n")
 
         try:
             self.process = await asyncio.create_subprocess_exec(
@@ -1013,11 +1009,15 @@ class SessionBot(BaseXMPPBot):
         self.add_event_handler("disconnected", self.on_disconnected)
 
     async def on_start(self, event):
-        self.send_presence()
-        await self.get_roster()
-        await self["xep_0280"].enable()  # type: ignore[attr-defined]
-        self.log.info("Connected")
-        self._connected = True
+        try:
+            self.send_presence()
+            await self.get_roster()
+            await self["xep_0280"].enable()  # type: ignore[attr-defined]
+            self.log.info("Connected")
+            self._connected = True
+        except Exception as exc:
+            self.log.exception("Session start error")
+            self._connected = False
 
     def is_connected(self) -> bool:
         return getattr(self, "_connected", False)
@@ -1190,6 +1190,13 @@ class SessionBot(BaseXMPPBot):
             self.send_reply(f"Error reading output: {e}")
 
     async def on_message(self, msg):
+        try:
+            await self._handle_session_message(msg)
+        except Exception as exc:
+            self.log.exception("Session message error")
+            self.send_reply(f"Error: {exc}")
+
+    async def _handle_session_message(self, msg):
         if msg["type"] not in ("chat", "normal"):
             return
         if not msg["body"]:
@@ -1696,27 +1703,54 @@ class DispatcherBot(BaseXMPPBot):
         self.connect()
 
     async def on_message(self, msg):
-        if msg["type"] not in ("chat", "normal"):
-            return
-        if not msg["body"]:
-            return
+        try:
+            if msg["type"] not in ("chat", "normal"):
+                return
+            if not msg["body"]:
+                return
 
-        sender = str(msg["from"].bare)
-        dispatcher_bare = XMPP_DISPATCHER_JID.split("/")[0]
-        if sender != XMPP_RECIPIENT and sender != dispatcher_bare:
-            return
+            sender = str(msg["from"].bare)
+            dispatcher_bare = XMPP_DISPATCHER_JID.split("/")[0]
+            sender_user = sender.split("@")[0]
+            if (
+                sender != XMPP_RECIPIENT
+                and sender != dispatcher_bare
+                and not sender_user.startswith("switch-loopback-")
+            ):
+                return
 
-        body = msg["body"].strip()
-        if body.startswith("@"):
-            body = "/" + body[1:]
+            reply_recipient = (
+                sender if sender_user.startswith("switch-loopback-") else None
+            )
 
-        self.log.info(f"Dispatcher received: {body[:50]}...")
+            reply_to = (
+                sender if sender_user.startswith("switch-loopback-") else XMPP_RECIPIENT
+            )
 
-        if body.startswith("/"):
-            await self.handle_command(body)
-            return
+            body = msg["body"].strip()
+            if body.startswith("@"):
+                body = "/" + body[1:]
 
-        await self.create_session(body)
+            self.log.info(f"Dispatcher received: {body[:50]}...")
+
+            if body.startswith("/"):
+                if reply_recipient:
+                    self.send_reply(
+                        "Loopback only supports session creation messages.",
+                        recipient=reply_recipient,
+                    )
+                    return
+                await self.handle_command(body)
+                return
+
+            await self.create_session(body)
+            if reply_recipient:
+                self.send_reply(
+                    f"Dispatcher received: {body}", recipient=reply_recipient
+                )
+        except Exception as exc:
+            self.log.exception("Dispatcher error")
+            self.send_reply(f"Error: {exc}", recipient=XMPP_RECIPIENT)
 
     async def handle_command(self, body: str):
         parts = body.split(maxsplit=1)
@@ -1979,7 +2013,9 @@ class DispatcherBot(BaseXMPPBot):
             agent_label = "GPT 5.2"
         else:
             agent_label = "GLM 4.7"
-        self.send_reply(f"Creating session: {name} ({agent_label})...", recipient=XMPP_RECIPIENT)
+        self.send_reply(
+            f"Creating session: {name} ({agent_label})...", recipient=XMPP_RECIPIENT
+        )
 
         recipient_user = XMPP_RECIPIENT.split("@")[0]
         add_roster_subscription(name, XMPP_RECIPIENT, "Clients")
@@ -1988,7 +2024,11 @@ class DispatcherBot(BaseXMPPBot):
         create_tmux_session(name)
 
         now = datetime.now().isoformat()
-        model_id = "openai/gpt-5.2-codex" if opencode_agent == "bridge-gpt" else "glm_gguf/glm-4.7-flash-q8"
+        model_id = (
+            "openai/gpt-5.2-codex"
+            if opencode_agent == "bridge-gpt"
+            else "glm_gguf/glm-4.7-flash-q8"
+        )
         self.db.execute(
             """INSERT INTO sessions
                (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active, model_id, opencode_agent)

@@ -100,6 +100,7 @@ class BaseXMPPBot(ClientXMPP):
         self["feature_mechanisms"].unencrypted_plain = True  # type: ignore[attr-defined]
         self.enable_starttls = False
         self.enable_direct_tls = False
+        self.enable_plaintext = True
         self.connect(server, port)
 
     def send_reply(self, text: str, recipient: str | None = None):
