@@ -57,7 +57,7 @@ WORKING_DIR = os.getenv("SWITCH_WORKING_DIR", str(Path.home()))
 DB_PATH = Path(__file__).parent / "sessions.db"
 HISTORY_PATH = Path.home() / ".claude" / "history.jsonl"
 ACTIVITY_LOG_PATH = Path.home() / ".claude" / "activity.jsonl"
-SESSION_OUTPUT_DIR = Path(__file__).parent / "output"  # Live output capture
+SESSION_OUTPUT_DIR = Path(__file__).parent.parent / "output"  # Live output capture
 
 # Calendar integration
 CALENDAR_DIR = Path.home() / "calendar"  # type: ignore[reportMissingImports]
@@ -76,62 +76,7 @@ except Exception:
     list_events = None
     format_event_for_display = None
 
-# Telegram integration
-TELEGRAM_DIR = Path.home() / "telegram"  # type: ignore[reportMissingImports]
-sys.path.insert(0, str(TELEGRAM_DIR))
-try:
-    tg = importlib.import_module("tg")  # type: ignore[reportMissingImports]
-    tg_send = tg.send_message
-    tg_history = tg.fetch_history
-    tg_poll = tg.poll_and_save
-    tg_typing = tg.send_typing
-    TELEGRAM_AVAILABLE = True
-except Exception:
-    TELEGRAM_AVAILABLE = False
-    tg_send = None
-    tg_history = None
-    tg_poll = None
-    tg_typing = None
-
-# Telegram engagement (for bidirectional mirroring)
-TELEGRAM_ENGAGEMENT_FILE = TELEGRAM_DIR / "engagement.json"
-
-
-def get_telegram_engagement() -> dict:
-    """Get current Telegram engagement state."""
-    if TELEGRAM_ENGAGEMENT_FILE.exists():
-        try:
-            return json.loads(TELEGRAM_ENGAGEMENT_FILE.read_text())
-        except (json.JSONDecodeError, IOError):
-            pass
-    return {"session": None, "chat_id": None}
-
-
-async def send_to_telegram(text: str, chat_id: int | None = None) -> bool:
-    """Send message to Telegram (async wrapper)."""
-    log.debug(f"send_to_telegram called: chat_id={chat_id}, text={text[:50]}...")
-    if not TELEGRAM_AVAILABLE:
-        log.warning("Telegram not available")
-        return False
-    try:
-        result = await tg_send(text, chat_id)  # type: ignore[misc]
-        success = any(r.get("ok") for r in result.values())
-        log.info(f"Telegram send result: success={success}")
-        return success
-    except Exception as e:
-        log.error(f"Failed to send to Telegram: {e}")
-        return False
-
-
-async def send_telegram_typing(chat_id: int | None = None) -> bool:
-    """Send typing indicator to Telegram."""
-    if not TELEGRAM_AVAILABLE:
-        return False
-    try:
-        return await tg_typing(chat_id)  # type: ignore[misc]
-    except Exception as e:
-        log.error(f"Failed to send typing to Telegram: {e}")
-        return False
+## Telegram integration removed
 
 
 logging.basicConfig(
@@ -1004,7 +949,6 @@ class SessionBot(BaseXMPPBot):
         self.runner: OpenCodeRunner | ClaudeRunner | None = None
         self.processing = False
         self.ralph_loop: RalphLoop | None = None
-        self.telegram_poll_task: asyncio.Task | None = None
         self.log = logging.getLogger(f"session.{session_name}")
 
         self.add_event_handler("session_start", self.on_start)
@@ -1025,13 +969,6 @@ class SessionBot(BaseXMPPBot):
     def is_connected(self) -> bool:
         return getattr(self, "_connected", False)
 
-    def is_telegram_engaged(self) -> tuple[bool, int | None]:
-        """Check if this session is engaged via Telegram. Returns (engaged, chat_id)."""
-        engagement = get_telegram_engagement()
-        if engagement.get("session") == self.session_name:
-            return True, engagement.get("chat_id")
-        return False, None
-
     def on_disconnected(self, event):
         self.log.warning("Disconnected, reconnecting...")
         asyncio.ensure_future(self._reconnect())
@@ -1045,25 +982,8 @@ class SessionBot(BaseXMPPBot):
         text: str,
         recipient: str | None = None,
         max_len: int = 3500,
-        mirror_to_telegram: bool = True,
     ):
         """Send message to user, splitting into multiple messages if needed."""
-        if mirror_to_telegram:
-            engaged, chat_id = self.is_telegram_engaged()
-            self.log.debug(
-                f"Telegram mirror check: engaged={engaged}, chat_id={chat_id}, session={self.session_name}"
-            )
-            if engaged and chat_id:
-                self.log.info(f"Mirroring to Telegram chat {chat_id}: {text[:50]}...")
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(send_to_telegram(text, chat_id))
-                except RuntimeError:
-                    self.log.warning(
-                        "No running loop for Telegram mirror, using ensure_future"
-                    )
-                    asyncio.ensure_future(send_to_telegram(text, chat_id))
-
         target = recipient or XMPP_RECIPIENT
         if len(text) <= max_len:
             msg = self.make_message(mto=target, mbody=text, mtype="chat")
@@ -1489,30 +1409,13 @@ class SessionBot(BaseXMPPBot):
         else:
             self.send_reply("Failed to start sibling session")
 
-    async def _telegram_typing_loop(self, chat_id: int):
-        """Send typing indicator every 5 seconds until processing is done."""
-        while self.processing:
-            await send_telegram_typing(chat_id)
-            await asyncio.sleep(5)
-
     async def process_message(
         self,
         body: str,
-        from_telegram: bool = False,
-        telegram_sender: str | None = None,
     ):
         """Send message to OpenCode or Claude and relay response."""
         self.processing = True
         self.send_typing()
-
-        engaged, tg_chat_id = self.is_telegram_engaged()
-        typing_task = None
-        if engaged and tg_chat_id:
-            typing_task = asyncio.ensure_future(self._telegram_typing_loop(tg_chat_id))
-
-        if not from_telegram:
-            if engaged and tg_chat_id:
-                asyncio.ensure_future(send_to_telegram(f"[XMPP] {body}", tg_chat_id))
 
         try:
             row = self.db.execute(
@@ -1532,8 +1435,7 @@ class SessionBot(BaseXMPPBot):
             self.db.commit()
 
             append_to_history(body, WORKING_DIR, claude_session_id)
-            source = f"telegram/{telegram_sender}" if from_telegram else "xmpp"
-            log_activity(body, session=self.session_name, source=source)
+            log_activity(body, session=self.session_name, source="xmpp")
 
             self.db.execute(
                 """INSERT INTO session_messages (session_name, role, content, engine, created_at)
@@ -1675,8 +1577,6 @@ class SessionBot(BaseXMPPBot):
 
         finally:
             self.processing = False
-            if typing_task:
-                typing_task.cancel()
 
 
 # =============================================================================
@@ -1883,66 +1783,6 @@ class DispatcherBot(BaseXMPPBot):
             self.send_reply("\n".join(lines), recipient=XMPP_RECIPIENT)
             return
 
-        if cmd == "/tg":
-            if not TELEGRAM_AVAILABLE:
-                self.send_reply(
-                    "Telegram not available. Check ~/telegram/tg.py",
-                    recipient=XMPP_RECIPIENT,
-                )
-                return
-
-            parts = arg.split(None, 1) if arg else [""]
-            subcmd = parts[0].lower()
-            subarg = parts[1] if len(parts) > 1 else ""
-
-            if subcmd == "send":
-                if not subarg:
-                    self.send_reply(
-                        "Usage: /tg send <message>", recipient=XMPP_RECIPIENT
-                    )
-                    return
-                results = await cast(Callable[[str], Awaitable[dict]], tg_send)(subarg)
-                ok_count = sum(
-                    1 for r in results.values() if isinstance(r, dict) and r.get("ok")
-                )
-                self.send_reply(f"Sent to {ok_count} chat(s)", recipient=XMPP_RECIPIENT)
-                return
-
-            if subcmd in ("history", "h"):
-                limit = int(subarg) if subarg else 10
-                msgs = await cast(Callable[[int], Awaitable[list[dict]]], tg_history)(
-                    limit
-                )
-                if not msgs:
-                    self.send_reply(
-                        "No messages yet. Send something to the bot first.",
-                        recipient=XMPP_RECIPIENT,
-                    )
-                    return
-                lines = []
-                for msg in msgs[-limit:]:
-                    date = msg.get("date", "")[-8:-3] if msg.get("date") else ""
-                    text = msg.get("text", "")[:60]
-                    lines.append(f"[{date}] {msg.get('from', '?')}: {text}")
-                self.send_reply("\n".join(lines), recipient=XMPP_RECIPIENT)
-                return
-
-            if subcmd == "poll":
-                count = await cast(Callable[[], Awaitable[int]], tg_poll)()
-                self.send_reply(
-                    f"Polled {count} new message(s)", recipient=XMPP_RECIPIENT
-                )
-                return
-
-            self.send_reply(
-                "Telegram commands:\n"
-                "  /tg send <msg> - send to all chats\n"
-                "  /tg history [n] - show last n messages\n"
-                "  /tg poll - fetch new messages",
-                recipient=XMPP_RECIPIENT,
-            )
-            return
-
         if cmd == "/recent":
             rows = self.db.execute(
                 """SELECT name, status, last_active, created_at
@@ -1972,7 +1812,6 @@ class DispatcherBot(BaseXMPPBot):
                 "  /recent - 10 most recent with status\n"
                 "  /kill <name> - end a session\n"
                 "  /cal - calendar (add/rm/list)\n"
-                "  /tg - telegram (send/history/poll)\n"
                 "  /help - this message",
                 recipient=XMPP_RECIPIENT,
             )

@@ -48,8 +48,8 @@ async def main():
 
     message = " ".join(sys.argv[1:])
 
-    dispatcher_jid = cfg["dispatcher_jid"]
-    dispatcher_password = cfg["dispatcher_password"]
+    dispatcher_jid = cfg["dispatchers"]["oc"]["jid"]
+    dispatcher_password = cfg["dispatchers"]["oc"]["password"]
 
     if not dispatcher_password:
         print("Error: XMPP_PASSWORD not set in .env")
