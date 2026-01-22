@@ -113,13 +113,13 @@ systemctl --user enable switch
 systemctl --user start switch
 ```
 
-### Using Scripts
+### Useful Commands
 
 ```bash
-scripts/start.sh   # Start via systemd
-scripts/stop.sh    # Stop
-scripts/logs.sh    # View logs
-scripts/run.sh     # Run directly (not via systemd)
+systemctl --user start switch    # Start service
+systemctl --user stop switch     # Stop service
+journalctl --user -u switch -f   # View logs
+scripts/run.sh                   # Run directly (not via systemd)
 ```
 
 ## Verification
@@ -137,10 +137,7 @@ switch/
 │   ├── bridge.py       # Entry point
 │   └── utils.py        # XMPP utilities
 ├── scripts/            # Utility scripts
-│   ├── start.sh        # Start via systemd
-│   ├── stop.sh         # Stop service
-│   ├── logs.sh         # View logs
-│   ├── run.sh          # Run directly
+│   ├── run.sh          # Run directly (not via systemd)
 │   ├── sessions.sh     # List/kill sessions
 │   ├── spawn-session.py
 │   └── close-session.py

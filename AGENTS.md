@@ -99,7 +99,7 @@ cat ~/switch/skills/<skill-name>.md
 | List sessions | `~/switch/scripts/sessions.sh list` |
 | Spawn session | `cd ~/switch && python scripts/spawn-session.py "message"` |
 | Close session | `cd ~/switch && python scripts/close-session.py <name>` |
-| Real-time logs | `~/switch/scripts/logs.sh` |
+| Real-time logs | `journalctl --user -u switch -f` |
 
 ## If You're Working on Switch Itself
 
