@@ -81,6 +81,12 @@ def _parse_args(argv: Iterable[str]) -> argparse.Namespace:
     parser.add_argument("message", nargs="?", default="test-session")
     parser.add_argument("--timeout", type=int, default=12)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument(
+        "--dispatcher",
+        choices=["cc", "oc", "oc-gpt"],
+        default="cc",
+        help="Which dispatcher to test (default: cc)",
+    )
     return parser.parse_args(list(argv))
 
 
@@ -91,7 +97,7 @@ def main(argv: Iterable[str]) -> int:
     cfg = get_xmpp_config()
 
     domain = cfg["domain"]
-    dispatcher_jid = cfg["dispatcher_jid"]
+    dispatcher_jid = cfg["dispatchers"][args.dispatcher]["jid"]
     server = cfg["server"]
 
     username = f"switch-loopback-{secrets.token_hex(3)}"

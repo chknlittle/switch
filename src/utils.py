@@ -38,16 +38,39 @@ def load_env(env_path: Path | None = None) -> None:
 def get_xmpp_config() -> dict:
     """Get XMPP configuration from environment."""
     server = os.getenv("XMPP_SERVER", "your.xmpp.server")
+    domain = os.getenv("XMPP_DOMAIN", server)
     return {
         "server": server,
-        "domain": os.getenv("XMPP_DOMAIN", server),
-        "dispatcher_jid": os.getenv("XMPP_JID", f"oc@{server}"),
-        "dispatcher_password": os.getenv("XMPP_PASSWORD", ""),
+        "domain": domain,
         "recipient": os.getenv("XMPP_RECIPIENT", f"user@{server}"),
         "ejabberd_ctl": os.getenv(
             "EJABBERD_CTL",
             f"ssh user@{server} /path/to/ejabberdctl",
         ),
+        # Three separate dispatchers
+        "dispatchers": {
+            "cc": {
+                "jid": os.getenv("CC_JID", f"cc@{domain}"),
+                "password": os.getenv("CC_PASSWORD", ""),
+                "engine": "claude",
+                "agent": None,
+                "label": "Claude Code",
+            },
+            "oc": {
+                "jid": os.getenv("OC_JID", f"oc@{domain}"),
+                "password": os.getenv("OC_PASSWORD", ""),
+                "engine": "opencode",
+                "agent": "bridge",
+                "label": "GLM 4.7",
+            },
+            "oc-gpt": {
+                "jid": os.getenv("OC_GPT_JID", f"oc-gpt@{domain}"),
+                "password": os.getenv("OC_GPT_PASSWORD", ""),
+                "engine": "opencode",
+                "agent": "bridge-gpt",
+                "label": "GPT 5.2",
+            },
+        },
     }
 
 

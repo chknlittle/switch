@@ -5,9 +5,14 @@ Switch - XMPP AI Assistant Bridge
 Each OpenCode/Claude session gets its own XMPP account, appearing as a separate
 chat contact in the client.
 
-- Send to oc@... to create a new session (auto-named from message)
-- Each session appears as its own contact (e.g., react-app@...)
-- Reply directly to that contact to continue the conversation
+Orchestrator contacts:
+- cc@... - Claude Code sessions
+- oc@... - OpenCode with GLM 4.7 (local)
+- oc-gpt@... - OpenCode with GPT 5.2
+
+Send any message to an orchestrator to create a new session.
+Each session appears as its own contact (e.g., react-app@...).
+Reply directly to that contact to continue the conversation.
 """
 
 # pyright: reportMissingImports=false
@@ -45,12 +50,10 @@ load_env()
 _cfg = get_xmpp_config()
 XMPP_SERVER = _cfg["server"]
 XMPP_DOMAIN = _cfg["domain"]
-XMPP_DISPATCHER_JID = _cfg["dispatcher_jid"]
-XMPP_DISPATCHER_PASSWORD = _cfg["dispatcher_password"]
 XMPP_RECIPIENT = _cfg["recipient"]
 EJABBERD_CTL = _cfg["ejabberd_ctl"]
-WORKING_DIR = os.getenv("CLAUDE_WORKING_DIR", str(Path.home()))
-OPENCODE_WORKING_DIR = os.getenv("OPENCODE_WORKING_DIR", str(Path(__file__).parent))
+DISPATCHERS = _cfg["dispatchers"]
+WORKING_DIR = os.getenv("SWITCH_WORKING_DIR", str(Path.home()))
 DB_PATH = Path(__file__).parent / "sessions.db"
 HISTORY_PATH = Path.home() / ".claude" / "history.jsonl"
 ACTIVITY_LOG_PATH = Path.home() / ".claude" / "activity.jsonl"
@@ -390,7 +393,7 @@ class OpenCodeRunner:
 
     def __init__(
         self,
-        working_dir: str = OPENCODE_WORKING_DIR,
+        working_dir: str = WORKING_DIR,
         session_name: str | None = None,
         model: str | None = None,
         reasoning_mode: str = "normal",
@@ -1169,6 +1172,10 @@ class SessionBot(BaseXMPPBot):
                     f.seek(-read_size, os.SEEK_CUR)
 
                 lines = buffer.splitlines()
+                # Drop first line - it's incomplete from backward chunk read
+                # (unless we read from the very start of the file)
+                if lines and f.tell() > 0:
+                    lines = lines[1:]
                 if not lines:
                     self.send_reply("Output file empty.")
                     return
@@ -1596,7 +1603,7 @@ class SessionBot(BaseXMPPBot):
 
             else:
                 self.runner = OpenCodeRunner(
-                    OPENCODE_WORKING_DIR,
+                    WORKING_DIR,
                     session_name=self.session_name,
                     model=model_id,
                     reasoning_mode=row["reasoning_mode"] if row else "normal",
@@ -1678,12 +1685,31 @@ class SessionBot(BaseXMPPBot):
 
 
 class DispatcherBot(BaseXMPPBot):
-    """Dispatcher bot that creates new session bots."""
+    """Dispatcher bot that creates new session bots.
 
-    def __init__(self, jid: str, password: str, db: sqlite3.Connection, manager=None):
+    Each dispatcher is tied to a specific engine/agent:
+    - cc: Claude Code
+    - oc: OpenCode with GLM 4.7 (bridge agent)
+    - oc-gpt: OpenCode with GPT 5.2 (bridge-gpt agent)
+    """
+
+    def __init__(
+        self,
+        jid: str,
+        password: str,
+        db: sqlite3.Connection,
+        manager=None,
+        *,
+        engine: str = "opencode",
+        opencode_agent: str | None = "bridge",
+        label: str = "GLM 4.7",
+    ):
         super().__init__(jid, password)
         self.db = db
         self.manager: SessionManager | None = manager
+        self.engine = engine
+        self.opencode_agent = opencode_agent
+        self.label = label
         self.add_event_handler("session_start", self.on_start)
         self.add_event_handler("message", self.on_message)
         self.add_event_handler("disconnected", self.on_disconnected)
@@ -1710,7 +1736,7 @@ class DispatcherBot(BaseXMPPBot):
                 return
 
             sender = str(msg["from"].bare)
-            dispatcher_bare = XMPP_DISPATCHER_JID.split("/")[0]
+            dispatcher_bare = str(self.boundjid.bare)
             sender_user = sender.split("@")[0]
             if (
                 sender != XMPP_RECIPIENT
@@ -1935,16 +1961,12 @@ class DispatcherBot(BaseXMPPBot):
 
         if cmd == "/help":
             self.send_reply(
-                "Send any message to start a new session.\n"
+                f"Send any message to start a new {self.label} session.\n"
                 "Each session appears as a separate contact.\n\n"
-                "Prefixes:\n"
-                "  @cc <msg> - start session on Claude\n"
-                "  @oc <msg> - start session on OpenCode\n\n"
-                "Aliases (some clients rewrite @cc):\n"
-                "  /cc <msg> - start session on Claude\n"
-                "  /oc <msg> - start session on OpenCode\n"
-                "  cc <msg> - start session on Claude\n"
-                "  oc <msg> - start session on OpenCode\n\n"
+                "Orchestrators:\n"
+                "  cc@ - Claude Code\n"
+                "  oc@ - OpenCode (GLM 4.7)\n"
+                "  oc-gpt@ - OpenCode (GPT 5.2)\n\n"
                 "Commands:\n"
                 "  /list - show all sessions\n"
                 "  /recent - 10 most recent with status\n"
@@ -1962,39 +1984,7 @@ class DispatcherBot(BaseXMPPBot):
         """Create a new session and send first message to the engine."""
         self.send_typing()
 
-        engine = "opencode"
-        opencode_agent = "bridge"  # default: local GLM 4.7
         message = first_message.strip()
-        lowered = message.lower()
-
-        if lowered.startswith("@cc"):
-            engine = "claude"
-            message = message[3:].lstrip()
-        elif lowered.startswith("@oc"):
-            engine = "opencode"
-            message = message[3:].lstrip()
-            # Check for agent variant: @oc gpt ...
-            if message.lower().startswith("gpt "):
-                opencode_agent = "bridge-gpt"
-                message = message[4:].lstrip()
-        elif lowered.startswith("/cc"):
-            engine = "claude"
-            message = message[3:].lstrip()
-        elif lowered.startswith("/oc"):
-            engine = "opencode"
-            message = message[3:].lstrip()
-            if message.lower().startswith("gpt "):
-                opencode_agent = "bridge-gpt"
-                message = message[4:].lstrip()
-        elif lowered.startswith("cc "):
-            engine = "claude"
-            message = message[2:].lstrip()
-        elif lowered.startswith("oc "):
-            engine = "opencode"
-            message = message[2:].lstrip()
-            if message.lower().startswith("gpt "):
-                opencode_agent = "bridge-gpt"
-                message = message[4:].lstrip()
 
         base_name = slugify(message or first_message)
         account = register_unique_account(base_name, self.db)
@@ -2007,14 +1997,8 @@ class DispatcherBot(BaseXMPPBot):
 
         name, password, jid = account
 
-        if engine == "claude":
-            agent_label = "Claude Code"
-        elif opencode_agent == "bridge-gpt":
-            agent_label = "GPT 5.2"
-        else:
-            agent_label = "GLM 4.7"
         self.send_reply(
-            f"Creating session: {name} ({agent_label})...", recipient=XMPP_RECIPIENT
+            f"Creating session: {name} ({self.label})...", recipient=XMPP_RECIPIENT
         )
 
         recipient_user = XMPP_RECIPIENT.split("@")[0]
@@ -2026,20 +2010,20 @@ class DispatcherBot(BaseXMPPBot):
         now = datetime.now().isoformat()
         model_id = (
             "openai/gpt-5.2-codex"
-            if opencode_agent == "bridge-gpt"
+            if self.opencode_agent == "bridge-gpt"
             else "glm_gguf/glm-4.7-flash-q8"
         )
         self.db.execute(
             """INSERT INTO sessions
                (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active, model_id, opencode_agent)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, jid, password, name, now, now, model_id, opencode_agent),
+            (name, jid, password, name, now, now, model_id, self.opencode_agent),
         )
         self.db.commit()
 
         self.db.execute(
             "UPDATE sessions SET active_engine = ? WHERE name = ?",
-            (engine, name),
+            (self.engine, name),
         )
         self.db.commit()
 
@@ -2054,7 +2038,7 @@ class DispatcherBot(BaseXMPPBot):
                 await asyncio.sleep(0.1)
 
             bot.send_reply(
-                f"Session '{name}' started ({agent_label}). "
+                f"Session '{name}' started ({self.label}). "
                 f"Processing: {message[:50] or first_message[:50]}..."
             )
             await bot.process_message(message or first_message)
@@ -2071,12 +2055,12 @@ class DispatcherBot(BaseXMPPBot):
 
 
 class SessionManager:
-    """Manages all session bots and dispatcher."""
+    """Manages all session bots and dispatchers."""
 
     def __init__(self, db: sqlite3.Connection):
         self.db = db
         self.sessions: dict[str, SessionBot] = {}
-        self.dispatcher: DispatcherBot | None = None
+        self.dispatchers: dict[str, DispatcherBot] = {}
         self.loop = asyncio.get_event_loop()
 
     async def start_session_bot(self, name: str, jid: str, password: str):
@@ -2146,12 +2130,21 @@ class SessionManager:
             del self.sessions[name]
         return True
 
-    async def start_dispatcher(self):
-        """Start dispatcher bot."""
-        self.dispatcher = DispatcherBot(
-            XMPP_DISPATCHER_JID, XMPP_DISPATCHER_PASSWORD, self.db, manager=self
-        )
-        self.dispatcher.connect_to_server(XMPP_SERVER)
+    async def start_dispatchers(self):
+        """Start all dispatcher bots (cc, oc, oc-gpt)."""
+        for name, cfg in DISPATCHERS.items():
+            dispatcher = DispatcherBot(
+                cfg["jid"],
+                cfg["password"],
+                self.db,
+                manager=self,
+                engine=cfg["engine"],
+                opencode_agent=cfg["agent"],
+                label=cfg["label"],
+            )
+            dispatcher.connect_to_server(XMPP_SERVER)
+            self.dispatchers[name] = dispatcher
+            log.info(f"Started dispatcher: {name} ({cfg['jid']})")
 
     async def restore_sessions(self):
         """Restore existing sessions from DB on startup."""
@@ -2174,7 +2167,7 @@ async def main():
     db = init_db()
     manager = SessionManager(db)
     await manager.restore_sessions()
-    await manager.start_dispatcher()
+    await manager.start_dispatchers()
 
     while True:
         await asyncio.sleep(1)
