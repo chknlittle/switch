@@ -69,6 +69,12 @@ You ──▶ XMPP Client ──▶ Dispatcher Bot ──▶ Session Bot ──�
 - ejabberd XMPP server
 - OpenCode CLI and/or Claude Code CLI
 - tmux
+- [Tailscale](https://tailscale.com/) (recommended for secure remote access)
+
+## Recommended Models
+
+- **OpenCode**: GLM 4.7-flash via OpenRouter - fast, cheap, good for iteration
+- **Claude Code**: Uses Claude Opus by default
 
 ## License
 
