@@ -80,6 +80,27 @@ cd ~/switch && python scripts/close-session.py <session-name>
 
 Never close your own session.
 
+### Long-Running Processes
+
+Any process expected to run longer than 10 seconds **must** be launched in a tmux session. This prevents blocking your main session and ensures processes survive disconnects.
+
+```bash
+# Create a named tmux session for your task
+tmux new-session -d -s my-task "command-to-run"
+
+# Check on it later
+tmux attach -t my-task
+
+# Or just view output without attaching
+tmux capture-pane -t my-task -p
+```
+
+Examples of what needs tmux:
+- Training runs, sweeps, backtests
+- Long builds or installs
+- Servers or daemons you're testing
+- Any batch processing job
+
 ### Skills (Runbooks)
 
 Reusable procedures live in `~/switch/skills/`. Check these for common operations:
