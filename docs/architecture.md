@@ -7,7 +7,7 @@ Switch creates a chat-based interface for AI coding assistants. Each conversatio
 The codebase lives at `~/switch`. AI agents working on this project should reference `~/switch/AGENTS.md` for conventions and `~/switch/memory/` for persistent context.
 
 ```mermaid
-flowchart TB
+flowchart LR
     subgraph User["User Devices"]
         Client["XMPP Client<br/>(Conversations, Gajim, etc.)"]
     end
@@ -15,14 +15,21 @@ flowchart TB
     subgraph Tailnet["Tailscale Network"]
         subgraph DevBox["Development Machine"]
             XMPP["ejabberd<br/>(XMPP Server)"]
+
             subgraph Orchestrators["Orchestrator Contacts"]
+                direction TB
                 CC["cc@...<br/>(Claude Code)"]
                 OC["oc@...<br/>(OpenCode GLM 4.7)"]
                 OCGPT["oc-gpt@...<br/>(OpenCode GPT 5.2)"]
             end
+
             Sessions["Session Bots<br/>(task-name@...)"]
-            OpenCode["OpenCode CLI"]
-            Claude["Claude CLI"]
+
+            subgraph Engines["AI CLIs"]
+                direction TB
+                OpenCode["OpenCode CLI"]
+                Claude["Claude CLI"]
+            end
         end
     end
 
@@ -33,6 +40,9 @@ flowchart TB
     XMPP <--> Sessions
     Sessions --> OpenCode
     Sessions --> Claude
+
+    classDef orchestrator fill:#f5f5e8,stroke:#8a7d60,color:#2c2c2c;
+    class CC,OC,OCGPT orchestrator;
 ```
 
 ## Network Topology
