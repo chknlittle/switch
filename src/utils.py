@@ -3,6 +3,7 @@
 Shared utilities for XMPP bridge components.
 """
 
+import asyncio
 import os
 import subprocess
 from pathlib import Path
@@ -112,6 +113,7 @@ class BaseXMPPBot(ClientXMPP):
     def __init__(self, jid: str, password: str, recipient: str | None = None):
         super().__init__(jid, password)
         self.recipient = recipient
+        self._connected_event = asyncio.Event()
 
         # Common plugins
         self.register_plugin("xep_0199")  # Ping
@@ -125,6 +127,22 @@ class BaseXMPPBot(ClientXMPP):
         self.enable_direct_tls = False
         self.enable_plaintext = True
         self.connect(server, port)
+
+    def set_connected(self, connected: bool) -> None:
+        if connected:
+            self._connected_event.set()
+        else:
+            self._connected_event.clear()
+
+    def is_connected(self) -> bool:
+        return self._connected_event.is_set()
+
+    async def wait_connected(self, timeout: float | None = None) -> bool:
+        try:
+            await asyncio.wait_for(self._connected_event.wait(), timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     def send_reply(self, text: str, recipient: str | None = None):
         """Send a chat message to recipient."""

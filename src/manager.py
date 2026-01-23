@@ -50,10 +50,17 @@ class SessionManager:
     async def start_session_bot(self, name: str, jid: str, password: str) -> SessionBot:
         """Start a session bot."""
         bot = SessionBot(
-            name, jid, password, self.db,
-            self.working_dir, self.output_dir,
-            self.xmpp_recipient, self.xmpp_domain, self.xmpp_server,
-            self.ejabberd_ctl, manager=self,
+            name,
+            jid,
+            password,
+            self.db,
+            self.working_dir,
+            self.output_dir,
+            self.xmpp_recipient,
+            self.xmpp_domain,
+            self.xmpp_server,
+            self.ejabberd_ctl,
+            manager=self,
         )
         bot.connect_to_server(self.xmpp_server)
         self.session_bots[name] = bot
@@ -70,17 +77,20 @@ class SessionManager:
 
         name, password, jid = account
         recipient_user = self.xmpp_recipient.split("@")[0]
-        add_roster_subscription(name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain)
-        add_roster_subscription(recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain)
+        add_roster_subscription(
+            name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain
+        )
+        add_roster_subscription(
+            recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain
+        )
         create_tmux_session(name, self.working_dir)
 
-        self.sessions.create(name=name, xmpp_jid=jid, xmpp_password=password, tmux_name=name)
+        self.sessions.create(
+            name=name, xmpp_jid=jid, xmpp_password=password, tmux_name=name
+        )
 
         bot = await self.start_session_bot(name, jid, password)
-        for _ in range(50):
-            if bot.is_connected():
-                break
-            await asyncio.sleep(0.1)
+        await bot.wait_connected(timeout=5)
 
         bot.send_reply(f"Session '{name}' created.")
         await bot.process_message(message)
@@ -102,10 +112,17 @@ class SessionManager:
         """Start all dispatcher bots."""
         for name, cfg in self.dispatchers_config.items():
             dispatcher = DispatcherBot(
-                cfg["jid"], cfg["password"], self.db,
-                self.working_dir, self.xmpp_recipient, self.xmpp_domain,
-                self.ejabberd_ctl, manager=self,
-                engine=cfg["engine"], opencode_agent=cfg["agent"], label=cfg["label"],
+                cfg["jid"],
+                cfg["password"],
+                self.db,
+                self.working_dir,
+                self.xmpp_recipient,
+                self.xmpp_domain,
+                self.ejabberd_ctl,
+                manager=self,
+                engine=cfg["engine"],
+                opencode_agent=cfg["agent"],
+                label=cfg["label"],
             )
             dispatcher.connect_to_server(self.xmpp_server)
             self.dispatchers[name] = dispatcher
@@ -115,5 +132,7 @@ class SessionManager:
         """Restore existing sessions from DB."""
         active = self.sessions.list_active()
         for session in active:
-            await self.start_session_bot(session.name, session.xmpp_jid, session.xmpp_password)
+            await self.start_session_bot(
+                session.name, session.xmpp_jid, session.xmpp_password
+            )
         log.info(f"Started {len(active)} existing session(s)")

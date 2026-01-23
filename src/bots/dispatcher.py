@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine
 
 from src.db import SessionRepository
@@ -14,6 +15,7 @@ from src.helpers import (
     register_unique_account,
     slugify,
 )
+from src.runners.opencode import OpenCodeRunner
 from src.utils import BaseXMPPBot
 
 if TYPE_CHECKING:
@@ -66,6 +68,8 @@ class DispatcherBot(BaseXMPPBot):
             "/list": self._cmd_list,
             "/kill": self._cmd_kill,
             "/recent": self._cmd_recent,
+            "/commit": self._cmd_commit,
+            "/c": self._cmd_commit,
             "/help": self._cmd_help,
         }
 
@@ -74,9 +78,11 @@ class DispatcherBot(BaseXMPPBot):
         await self.get_roster()
         self.log = logging.getLogger("dispatcher")
         self.log.info("Dispatcher connected")
+        self.set_connected(True)
 
     def on_disconnected(self, event):
         self.log.warning("Dispatcher disconnected, reconnecting...")
+        self.set_connected(False)
         asyncio.ensure_future(self._reconnect())
 
     async def _reconnect(self):
@@ -170,6 +176,40 @@ class DispatcherBot(BaseXMPPBot):
         else:
             self.send_reply("No sessions yet.", recipient=self.xmpp_recipient)
 
+    async def _cmd_commit(self, arg: str) -> None:
+        if not arg:
+            self.send_reply("Usage: /commit <repo>", recipient=self.xmpp_recipient)
+            return
+
+        repo_path = Path.home() / arg.strip()
+        if not (repo_path / ".git").exists():
+            self.send_reply(f"Not a git repo: {repo_path}", recipient=self.xmpp_recipient)
+            return
+
+        self.send_reply(f"Committing {arg}...", recipient=self.xmpp_recipient)
+
+        runner = OpenCodeRunner(
+            working_dir=str(repo_path),
+            output_dir=Path(self.working_dir) / "output",
+            model="glm_vllm/glm-4.7-flash",
+            agent="coder",
+        )
+
+        response_text = ""
+        async for event_type, data in runner.run(
+            f"please commit and push the working changes in {repo_path}"
+        ):
+            if event_type == "text":
+                response_text += data
+            elif event_type == "error":
+                self.send_reply(f"Error: {data}", recipient=self.xmpp_recipient)
+                return
+
+        if response_text:
+            self.send_reply(response_text.strip(), recipient=self.xmpp_recipient)
+        else:
+            self.send_reply("Done (no output)", recipient=self.xmpp_recipient)
+
     async def _cmd_help(self, _arg: str) -> None:
         self.send_reply(
             f"Send any message to start a new {self.label} session.\n\n"
@@ -181,6 +221,7 @@ class DispatcherBot(BaseXMPPBot):
             "  /list - show sessions\n"
             "  /recent - recent with status\n"
             "  /kill <name> - end session\n"
+            "  /commit <repo> - commit and push\n"
             "  /help - this message",
             recipient=self.xmpp_recipient,
         )
@@ -234,10 +275,7 @@ class DispatcherBot(BaseXMPPBot):
 
         bot = await self.manager.start_session_bot(name, jid, password)
         if bot:
-            for _ in range(50):
-                if bot.is_connected():
-                    break
-                await asyncio.sleep(0.1)
+            await bot.wait_connected(timeout=5)
             bot.send_reply(
                 f"Session '{name}' ({self.label}). Processing: {message[:50]}..."
             )

@@ -89,16 +89,14 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             await self.get_roster()
             await self["xep_0280"].enable()  # type: ignore[attr-defined]
             self.log.info("Connected")
-            self._connected = True
+            self.set_connected(True)
         except Exception:
             self.log.exception("Session start error")
-            self._connected = False
-
-    def is_connected(self) -> bool:
-        return getattr(self, "_connected", False)
+            self.set_connected(False)
 
     def on_disconnected(self, event):
         self.log.warning("Disconnected, reconnecting...")
+        self.set_connected(False)
         asyncio.ensure_future(self._reconnect())
 
     def _build_engine_handlers(self) -> dict[str, EngineHandler]:
@@ -680,10 +678,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         bot = await self.manager.start_session_bot(name, jid, password)
         if bot:
-            for _ in range(50):
-                if bot.is_connected():
-                    break
-                await asyncio.sleep(0.1)
+            await bot.wait_connected(timeout=5)
             bot.send_reply(
                 f"Sibling session '{name}' (spawned from {self.session_name})"
             )
