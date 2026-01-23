@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
+from src.engines import normalize_engine
 from src.ralph import RalphLoop, parse_ralph_command
 
 if TYPE_CHECKING:
@@ -19,11 +21,15 @@ def command(name: str, *aliases: str, exact: bool = True):
         *aliases: Additional names that trigger this command
         exact: If True, requires exact match; if False, allows prefix match
     """
-    def decorator(func: Callable[..., Awaitable[bool]]) -> Callable[..., Awaitable[bool]]:
+
+    def decorator(
+        func: Callable[..., Awaitable[bool]],
+    ) -> Callable[..., Awaitable[bool]]:
         func._command_name = name
         func._command_aliases = aliases
         func._command_exact = exact
         return func
+
     return decorator
 
 
@@ -43,7 +49,7 @@ class CommandHandler:
         """Find all @command decorated methods and register them."""
         for name in dir(self):
             method = getattr(self, name)
-            if callable(method) and hasattr(method, '_command_name'):
+            if callable(method) and hasattr(method, "_command_name"):
                 cmd_name = method._command_name
                 exact = method._command_exact
                 self._commands[cmd_name] = (method, exact)
@@ -106,11 +112,7 @@ class CommandHandler:
             self.bot.send_reply("Usage: /agent oc|cc")
             return True
 
-        engine_map = {
-            "oc": "opencode", "opencode": "opencode",
-            "cc": "claude", "claude": "claude",
-        }
-        engine = engine_map.get(parts[1])
+        engine = normalize_engine(parts[1])
         if not engine:
             self.bot.send_reply("Usage: /agent oc|cc")
             return True
@@ -128,7 +130,15 @@ class CommandHandler:
             return True
 
         session = self.bot.sessions.get(self.bot.session_name)
-        if session and session.active_engine != "opencode":
+        if not session:
+            self.bot.send_reply("Session not found.")
+            return True
+
+        handler = self.bot.engine_handler_for(session.active_engine)
+        if not handler:
+            self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
+            return True
+        if not handler.supports_reasoning:
             self.bot.send_reply("/thinking only applies to OpenCode sessions.")
             return True
 
@@ -153,10 +163,15 @@ class CommandHandler:
     async def reset(self, _body: str) -> bool:
         """Reset session context."""
         session = self.bot.sessions.get(self.bot.session_name)
-        if session and session.active_engine == "claude":
-            self.bot.sessions.reset_claude_session(self.bot.session_name)
-        else:
-            self.bot.sessions.reset_opencode_session(self.bot.session_name)
+        if not session:
+            self.bot.send_reply("Session not found.")
+            return True
+
+        handler = self.bot.engine_handler_for(session.active_engine)
+        if not handler:
+            self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
+            return True
+        handler.reset()
         self.bot.send_reply("Session reset.")
         return True
 
@@ -185,7 +200,9 @@ class CommandHandler:
         else:
             loop = self.bot.ralph_loops.get_latest(self.bot.session_name)
             if loop:
-                max_str = str(loop.max_iterations) if loop.max_iterations else "unlimited"
+                max_str = (
+                    str(loop.max_iterations) if loop.max_iterations else "unlimited"
+                )
                 self.bot.send_reply(
                     f"Last Ralph: {loop.status}\n"
                     f"Iterations: {loop.current_iteration}/{max_str}\n"
@@ -228,4 +245,59 @@ class CommandHandler:
         )
         self.bot.processing = True
         asyncio.ensure_future(cast(Awaitable[Any], self.bot.run_ralph()))
+        return True
+
+    @command("/commit", "/c", exact=False)
+    async def commit(self, body: str) -> bool:
+        """Commit and push changes. Usage: /commit [path] [-- message hint]"""
+        if self.bot.processing:
+            self.bot.send_reply("Already running. Try again when idle.")
+            return True
+
+        # Parse: /commit [path] [-- guidance]
+        parts = body.strip().split(maxsplit=1)
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        # Check for explicit path or guidance separator
+        target_dir = self.bot.working_dir
+        guidance = ""
+        if rest:
+            if rest.startswith("--"):
+                guidance = rest[2:].strip()
+            elif " -- " in rest:
+                path_part, guidance = rest.split(" -- ", 1)
+                path_part = path_part.strip()
+                if path_part:
+                    target_dir = str(Path(path_part).expanduser().resolve())
+            else:
+                # Could be a path or guidance - check if it's a valid directory
+                maybe_path = Path(rest.split()[0]).expanduser()
+                if maybe_path.is_dir():
+                    target_dir = str(maybe_path.resolve())
+                    # Rest after path is guidance
+                    leftover = rest[len(rest.split()[0]):].strip()
+                    if leftover.startswith("--"):
+                        leftover = leftover[2:].strip()
+                    guidance = leftover
+                else:
+                    guidance = rest
+
+        # Validate git repo
+        if not Path(target_dir, ".git").exists():
+            self.bot.send_reply(f"Not a git repo: {target_dir}")
+            return True
+
+        prompt = (
+            "Commit and push all working changes. "
+            "Run git status/diff, stage everything, write a concise commit message, "
+            "commit, and push. If no changes, say so. If no upstream, explain."
+        )
+        if guidance:
+            prompt = f"{prompt} Commit context: {guidance}"
+
+        await self.bot.run_opencode_one_shot(
+            prompt,
+            model_id="glm_vllm/glm-4.7-flash",
+            working_dir=target_dir,
+        )
         return True

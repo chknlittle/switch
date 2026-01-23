@@ -4,7 +4,10 @@
 flowchart LR
     Phone --> Server[Chat Server]
     Computer --> Server
-    Server --> Agents[AI Agents]
+    Server --> DevBox
+    subgraph DevBox[Development Computer]
+        Agents[AI Agents]
+    end
 ```
 
 Chat with AI coding assistants from any XMPP client. Each conversation becomes a separate contact, making it easy to manage multiple concurrent sessions from your phone or desktop.

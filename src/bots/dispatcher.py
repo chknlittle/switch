@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Callable, Coroutine
 
 from src.db import SessionRepository
+from src.engines import opencode_model_for_agent
 from src.helpers import (
     add_roster_subscription,
     create_tmux_session,
@@ -109,7 +110,9 @@ class DispatcherBot(BaseXMPPBot):
 
             if body.startswith("/"):
                 if is_loopback:
-                    self.send_reply("Loopback only supports session creation.", recipient=reply_to)
+                    self.send_reply(
+                        "Loopback only supports session creation.", recipient=reply_to
+                    )
                     return
                 await self._dispatch_command(body)
                 return
@@ -144,10 +147,14 @@ class DispatcherBot(BaseXMPPBot):
 
     async def _cmd_kill(self, arg: str) -> None:
         if not arg:
-            self.send_reply("Usage: /kill <session-name>", recipient=self.xmpp_recipient)
+            self.send_reply(
+                "Usage: /kill <session-name>", recipient=self.xmpp_recipient
+            )
             return
         if not self.manager:
-            self.send_reply("Session manager unavailable.", recipient=self.xmpp_recipient)
+            self.send_reply(
+                "Session manager unavailable.", recipient=self.xmpp_recipient
+            )
             return
         await self.manager.kill_session(arg)
         self.send_reply(f"Killed: {arg}", recipient=self.xmpp_recipient)
@@ -185,29 +192,44 @@ class DispatcherBot(BaseXMPPBot):
 
         account = register_unique_account(
             slugify(message or first_message),
-            self.db, self.ejabberd_ctl, self.xmpp_domain, self.log,
+            self.db,
+            self.ejabberd_ctl,
+            self.xmpp_domain,
+            self.log,
         )
         if not account:
             self.send_reply(f"Failed to create session", recipient=self.xmpp_recipient)
             return
 
         name, password, jid = account
-        self.send_reply(f"Creating: {name} ({self.label})...", recipient=self.xmpp_recipient)
+        self.send_reply(
+            f"Creating: {name} ({self.label})...", recipient=self.xmpp_recipient
+        )
 
         recipient_user = self.xmpp_recipient.split("@")[0]
-        add_roster_subscription(name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain)
-        add_roster_subscription(recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain)
+        add_roster_subscription(
+            name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain
+        )
+        add_roster_subscription(
+            recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain
+        )
         create_tmux_session(name, self.working_dir)
 
-        model_id = "openai/gpt-5.2-codex" if self.opencode_agent == "bridge-gpt" else "glm_vllm/glm-4.7-flash"
+        model_id = opencode_model_for_agent(self.opencode_agent)
         self.sessions.create(
-            name=name, xmpp_jid=jid, xmpp_password=password, tmux_name=name,
-            model_id=model_id, opencode_agent=self.opencode_agent or "bridge",
+            name=name,
+            xmpp_jid=jid,
+            xmpp_password=password,
+            tmux_name=name,
+            model_id=model_id,
+            opencode_agent=self.opencode_agent or "bridge",
             active_engine=self.engine,
         )
 
         if not self.manager:
-            self.send_reply("Session manager unavailable.", recipient=self.xmpp_recipient)
+            self.send_reply(
+                "Session manager unavailable.", recipient=self.xmpp_recipient
+            )
             return
 
         bot = await self.manager.start_session_bot(name, jid, password)
@@ -216,7 +238,11 @@ class DispatcherBot(BaseXMPPBot):
                 if bot.is_connected():
                     break
                 await asyncio.sleep(0.1)
-            bot.send_reply(f"Session '{name}' ({self.label}). Processing: {message[:50]}...")
+            bot.send_reply(
+                f"Session '{name}' ({self.label}). Processing: {message[:50]}..."
+            )
             await bot.process_message(message or first_message)
         else:
-            self.send_reply(f"Failed to start bot for {name}", recipient=self.xmpp_recipient)
+            self.send_reply(
+                f"Failed to start bot for {name}", recipient=self.xmpp_recipient
+            )

@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from src.bots.ralph_mixin import RalphMixin
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
+from src.engines import get_engine_spec
 from src.helpers import (
     add_roster_subscription,
     append_to_history,
@@ -24,7 +26,16 @@ from src.utils import BaseXMPPBot
 if TYPE_CHECKING:
     import sqlite3
 
+    from src.db import Session
     from src.manager import SessionManager
+
+
+@dataclass(frozen=True)
+class EngineHandler:
+    name: str
+    run: Callable[[str, "Session"], Awaitable[None]]
+    reset: Callable[[], None]
+    supports_reasoning: bool
 
 
 class SessionBot(RalphMixin, BaseXMPPBot):
@@ -62,6 +73,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self.log = logging.getLogger(f"session.{session_name}")
         self.init_ralph(RalphLoopRepository(db))
         self.commands = CommandHandler(self)
+        self._engine_handlers = self._build_engine_handlers()
 
         self.add_event_handler("session_start", self.on_start)
         self.add_event_handler("message", self.on_message)
@@ -88,6 +100,31 @@ class SessionBot(RalphMixin, BaseXMPPBot):
     def on_disconnected(self, event):
         self.log.warning("Disconnected, reconnecting...")
         asyncio.ensure_future(self._reconnect())
+
+    def _build_engine_handlers(self) -> dict[str, EngineHandler]:
+        claude_spec = get_engine_spec("claude")
+        opencode_spec = get_engine_spec("opencode")
+        return {
+            "claude": EngineHandler(
+                name="claude",
+                run=self._run_claude,
+                reset=lambda: self.sessions.reset_claude_session(self.session_name),
+                supports_reasoning=claude_spec.supports_reasoning
+                if claude_spec
+                else False,
+            ),
+            "opencode": EngineHandler(
+                name="opencode",
+                run=self._run_opencode,
+                reset=lambda: self.sessions.reset_opencode_session(self.session_name),
+                supports_reasoning=opencode_spec.supports_reasoning
+                if opencode_spec
+                else False,
+            ),
+        }
+
+    def engine_handler_for(self, engine: str) -> EngineHandler | None:
+        return self._engine_handlers.get(engine)
 
     async def _reconnect(self):
         await asyncio.sleep(5)
@@ -229,7 +266,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
             output = stdout.decode("utf-8", errors="replace").strip() or "(no output)"
 
-            display = output[:4000] + "\n... (truncated)" if len(output) > 4000 else output
+            display = (
+                output[:4000] + "\n... (truncated)" if len(output) > 4000 else output
+            )
             self.send_reply(f"$ {cmd}\n{display}")
 
             context_msg = f"[I ran a shell command: `{cmd}`]\n\nOutput:\n```\n{output[:8000]}\n```"
@@ -279,7 +318,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             lines = buffer.splitlines()
             if lines and f.tell() > 0:
                 lines = lines[1:]  # Skip partial first line
-            return [line.decode("utf-8", errors="replace") for line in lines[-num_lines:]]
+            return [
+                line.decode("utf-8", errors="replace") for line in lines[-num_lines:]
+            ]
 
     # -------------------------------------------------------------------------
     # Message processing
@@ -295,7 +336,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 next_body = self.message_queue.get_nowait()
                 queue_remaining = self.message_queue.qsize()
                 if queue_remaining > 0:
-                    self.send_reply(f"Processing queued message ({queue_remaining} remaining)...")
+                    self.send_reply(
+                        f"Processing queued message ({queue_remaining} remaining)..."
+                    )
                 else:
                     self.send_reply("Processing queued message...")
                 await self.process_message(next_body)
@@ -322,16 +365,99 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             if not trigger_response:
                 return
 
-            if session.active_engine == "claude":
-                await self._run_claude(body, session)
-            else:
-                await self._run_opencode(body, session)
+            handler = self.engine_handler_for(session.active_engine)
+            if not handler:
+                self.send_reply(f"Unknown engine '{session.active_engine}'.")
+                return
+            await handler.run(body, session)
 
         except Exception as e:
             self.log.exception("Error")
             self.send_reply(f"Error: {e}")
         finally:
             self.processing = False
+
+    async def run_opencode_one_shot(
+        self,
+        prompt: str,
+        model_id: str,
+        working_dir: str | None = None,
+    ) -> None:
+        """Run a single OpenCode prompt with a temporary model override."""
+        session = self.sessions.get(self.session_name)
+        if not session:
+            self.send_reply("Session not found in database.")
+            return
+
+        original_engine = session.active_engine
+        original_model = session.model_id
+        original_working_dir = self.working_dir
+
+        self.sessions.update_engine(self.session_name, "opencode")
+        self.sessions.update_model(self.session_name, model_id)
+        if working_dir:
+            self.working_dir = working_dir
+        try:
+            await self.process_message(prompt)
+        finally:
+            self.sessions.update_engine(self.session_name, original_engine)
+            self.sessions.update_model(self.session_name, original_model)
+            self.working_dir = original_working_dir
+
+    async def run_opencode_capture(
+        self,
+        prompt: str,
+        model_id: str,
+        working_dir: str | None = None,
+        agent: str | None = None,
+    ) -> str:
+        """Run OpenCode and capture the final response text.
+
+        Args:
+            prompt: The prompt to send
+            model_id: Model to use
+            working_dir: Optional working directory override
+            agent: Optional agent override (use "summary" for tool-less extraction)
+        """
+        session = self.sessions.get(self.session_name)
+        if not session:
+            self.send_reply("Session not found in database.")
+            return ""
+
+        original_working_dir = self.working_dir
+        if working_dir:
+            self.working_dir = working_dir
+
+        self.processing = True
+        question_callback = self._create_question_callback()
+        self.runner = OpenCodeRunner(
+            self.working_dir,
+            self.output_dir,
+            self.session_name,
+            model=model_id,
+            reasoning_mode=session.reasoning_mode,
+            agent=agent or session.opencode_agent,
+            question_callback=question_callback,
+        )
+
+        response_text = ""
+
+        try:
+            async for event_type, content in self.runner.run(
+                prompt, session.opencode_session_id
+            ):
+                if event_type == "session_id" and isinstance(content, str):
+                    self.sessions.update_opencode_session_id(self.session_name, content)
+                elif event_type == "text" and isinstance(content, str):
+                    response_text += content
+                elif event_type == "error":
+                    self.send_reply(f"Error: {content}")
+                    break
+        finally:
+            self.processing = False
+            self.working_dir = original_working_dir
+
+        return response_text.strip()
 
     async def _run_claude(self, body: str, session):
         """Run Claude and handle events."""
@@ -340,7 +466,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         tool_summaries: list[str] = []
         last_progress_at = 0
 
-        async for event_type, content in self.runner.run(body, session.claude_session_id):
+        async for event_type, content in self.runner.run(
+            body, session.claude_session_id
+        ):
             if event_type == "session_id":
                 self.sessions.update_claude_session_id(self.session_name, content)
             elif event_type == "text":
@@ -351,7 +479,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                     last_progress_at = len(tool_summaries)
                     self.send_reply(f"... {' '.join(tool_summaries[-3:])}")
             elif event_type == "result":
-                self._send_result(tool_summaries, response_parts, content, session.active_engine)
+                self._send_result(
+                    tool_summaries, response_parts, content, session.active_engine
+                )
             elif event_type == "error":
                 self.send_reply(f"Error: {content}")
             elif event_type == "cancelled":
@@ -363,7 +493,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         question_callback = self._create_question_callback()
 
         self.runner = OpenCodeRunner(
-            self.working_dir, self.output_dir, self.session_name,
+            self.working_dir,
+            self.output_dir,
+            self.session_name,
             model=session.model_id,
             reasoning_mode=session.reasoning_mode,
             agent=session.opencode_agent,
@@ -374,7 +506,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         accumulated = ""
         last_progress_at = 0
 
-        async for event_type, content in self.runner.run(body, session.opencode_session_id):
+        async for event_type, content in self.runner.run(
+            body, session.opencode_session_id
+        ):
             if event_type == "session_id":
                 self.sessions.update_opencode_session_id(self.session_name, content)
             elif event_type == "text" and isinstance(content, str):
@@ -394,7 +528,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                     f" r{content.tokens_reasoning} c{content.tokens_cache_read}/{content.tokens_cache_write}"
                     f" ${content.cost:.3f} {content.duration_s:.1f}s]"
                 )
-                self._send_result(tool_summaries, response_parts, stats, session.active_engine)
+                self._send_result(
+                    tool_summaries, response_parts, stats, session.active_engine
+                )
             elif event_type == "error":
                 self.send_reply(f"Error: {content}")
             elif event_type == "cancelled":
@@ -423,7 +559,11 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 # Wait for user response with timeout
                 answer = await asyncio.wait_for(future, timeout=300)  # 5 min timeout
                 # Parse the answer - for now just use it as the first answer
-                return {question.questions[0]["question"]: [answer]} if question.questions else {}
+                return (
+                    {question.questions[0]["question"]: [answer]}
+                    if question.questions
+                    else {}
+                )
             except asyncio.TimeoutError:
                 self.send_reply("[Question timed out - proceeding without answer]")
                 raise
@@ -459,7 +599,10 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
     def answer_pending_question(self, answer: str) -> bool:
         """Answer a pending question. Called from message handler."""
-        if not hasattr(self, "_pending_question_answers") or not self._pending_question_answers:
+        if (
+            not hasattr(self, "_pending_question_answers")
+            or not self._pending_question_answers
+        ):
             return False
 
         # Answer the most recent pending question
@@ -490,7 +633,8 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         self.send_reply("\n\n".join(parts))
         self.messages.add(
-            self.session_name, "assistant",
+            self.session_name,
+            "assistant",
             response_parts[-1] if response_parts else "",
             engine,
         )
@@ -511,7 +655,10 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         account = register_unique_account(
             f"{self.session_name}-sib",
-            self.db, self.ejabberd_ctl, self.xmpp_domain, self.log,
+            self.db,
+            self.ejabberd_ctl,
+            self.xmpp_domain,
+            self.log,
         )
         if not account:
             self.send_reply("Failed to create sibling session")
@@ -519,11 +666,17 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         name, password, jid = account
         recipient_user = self.xmpp_recipient.split("@")[0]
-        add_roster_subscription(name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain)
-        add_roster_subscription(recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain)
+        add_roster_subscription(
+            name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain
+        )
+        add_roster_subscription(
+            recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain
+        )
         create_tmux_session(name, self.working_dir)
 
-        self.sessions.create(name=name, xmpp_jid=jid, xmpp_password=password, tmux_name=name)
+        self.sessions.create(
+            name=name, xmpp_jid=jid, xmpp_password=password, tmux_name=name
+        )
 
         bot = await self.manager.start_session_bot(name, jid, password)
         if bot:
@@ -531,7 +684,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 if bot.is_connected():
                     break
                 await asyncio.sleep(0.1)
-            bot.send_reply(f"Sibling session '{name}' (spawned from {self.session_name})")
+            bot.send_reply(
+                f"Sibling session '{name}' (spawned from {self.session_name})"
+            )
             await bot.process_message(first_message)
         else:
             self.send_reply("Failed to start sibling session")

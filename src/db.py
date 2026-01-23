@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from src.engines import OPENCODE_MODEL_DEFAULT, OPENCODE_MODEL_GPT
+
 DB_PATH = Path(__file__).parent.parent / "sessions.db"
 
 
@@ -80,7 +82,7 @@ class SessionRepository:
             opencode_session_id=row["opencode_session_id"],
             active_engine=row["active_engine"] or "opencode",
             opencode_agent=row["opencode_agent"] or "bridge",
-            model_id=row["model_id"] or "glm_vllm/glm-4.7-flash",
+            model_id=row["model_id"] or OPENCODE_MODEL_DEFAULT,
             reasoning_mode=row["reasoning_mode"] or "normal",
             tmux_name=row["tmux_name"],
             created_at=row["created_at"],
@@ -124,7 +126,7 @@ class SessionRepository:
         xmpp_jid: str,
         xmpp_password: str,
         tmux_name: str,
-        model_id: str = "glm_vllm/glm-4.7-flash",
+        model_id: str = OPENCODE_MODEL_DEFAULT,
         opencode_agent: str = "bridge",
         active_engine: str = "opencode",
     ) -> Session:
@@ -134,8 +136,17 @@ class SessionRepository:
                (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
                 model_id, opencode_agent, active_engine)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, xmpp_jid, xmpp_password, tmux_name, now, now,
-             model_id, opencode_agent, active_engine),
+            (
+                name,
+                xmpp_jid,
+                xmpp_password,
+                tmux_name,
+                now,
+                now,
+                model_id,
+                opencode_agent,
+                active_engine,
+            ),
         )
         self.conn.commit()
         return self.get(name)  # type: ignore[return-value]
@@ -244,8 +255,13 @@ class RalphLoopRepository:
             """INSERT INTO ralph_loops
                (session_name, prompt, completion_promise, max_iterations, started_at)
                VALUES (?, ?, ?, ?, ?)""",
-            (session_name, prompt, completion_promise, max_iterations,
-             datetime.now().isoformat()),
+            (
+                session_name,
+                prompt,
+                completion_promise,
+                max_iterations,
+                datetime.now().isoformat(),
+            ),
         )
         self.conn.commit()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -274,6 +290,16 @@ class MessageRepository:
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
 
+    def _row_to_message(self, row: sqlite3.Row) -> SessionMessage:
+        return SessionMessage(
+            id=row["id"],
+            session_name=row["session_name"],
+            role=row["role"],
+            content=row["content"],
+            engine=row["engine"],
+            created_at=row["created_at"],
+        )
+
     def add(
         self,
         session_name: str,
@@ -288,6 +314,16 @@ class MessageRepository:
             (session_name, role, content, engine, datetime.now().isoformat()),
         )
         self.conn.commit()
+
+    def list_recent(self, session_name: str, limit: int = 40) -> list[SessionMessage]:
+        rows = self.conn.execute(
+            """SELECT * FROM session_messages
+               WHERE session_name = ?
+               ORDER BY id DESC
+               LIMIT ?""",
+            (session_name, limit),
+        ).fetchall()
+        return [self._row_to_message(row) for row in rows]
 
 
 def init_db() -> sqlite3.Connection:
@@ -346,7 +382,7 @@ def init_db() -> sqlite3.Connection:
         ("opencode_session_id", "TEXT"),
         ("active_engine", "TEXT DEFAULT 'opencode'"),
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
-        ("model_id", "TEXT DEFAULT 'openai/gpt-5.2-codex'"),
+        ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_GPT}'"),
         ("reasoning_mode", "TEXT DEFAULT 'normal'"),
     ]
     for col_name, col_type in migrations:
@@ -358,3 +394,5 @@ def init_db() -> sqlite3.Connection:
 
     conn.commit()
     return conn
+
+
