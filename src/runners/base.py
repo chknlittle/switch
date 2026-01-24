@@ -56,7 +56,7 @@ class BaseRunner:
 
     def _log_prompt(self, prompt: str) -> None:
         """Log the prompt to the output file."""
-        self._log_to_file(f"[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n")
+        self._log_to_file(f"\n[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n")
 
     def _log_response(self, text: str) -> None:
         """Log a response to the output file."""

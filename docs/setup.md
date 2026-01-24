@@ -94,6 +94,55 @@ vim ~/AGENTS.md
 ln -s ~/AGENTS.md ~/CLAUDE.md
 ```
 
+## Skills
+
+Skills are reusable runbooks/procedures that live in `~/switch/skills/`. Both Claude Code and OpenCode can use skills, but they expect different formats:
+
+- **Claude Code**: Flat `.md` files with YAML frontmatter (e.g., `spawn-session.md`)
+- **OpenCode**: Folder per skill with `SKILL.md` inside (e.g., `spawn-session/SKILL.md`)
+
+### Syncing Skills to OpenCode
+
+The `sync-to-opencode.py` script converts Claude Code skills to OpenCode format:
+
+```bash
+python ~/switch/scripts/sync-to-opencode.py
+```
+
+This reads all `.md` files from `~/switch/skills/` and creates the corresponding folder structure in `~/.config/opencode/skill/`. No symlinks needed - the script copies and reformats everything.
+
+Options:
+
+```bash
+# Preview what would be synced (dry run)
+python ~/switch/scripts/sync-to-opencode.py --dry-run
+
+# Custom source/target directories
+python ~/switch/scripts/sync-to-opencode.py --source /path/to/skills --target /path/to/opencode/skills
+```
+
+### Skill Requirements
+
+For a skill to sync successfully, it must have YAML frontmatter with:
+
+- `name`: Lowercase alphanumeric with hyphens only (e.g., `spawn-session`, not `Spawn_Session`)
+- `description`: What the skill does (max 1024 chars)
+
+Example skill format:
+
+```markdown
+---
+name: spawn-session
+description: Spawn a new Switch session with a handoff message
+---
+
+# Spawn Session
+
+Instructions for spawning a new session...
+```
+
+Run the sync script after adding or modifying skills to keep OpenCode up to date.
+
 ## Running
 
 ### Direct
