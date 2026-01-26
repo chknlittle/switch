@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import AsyncIterator
@@ -34,6 +36,14 @@ Event = tuple[str, str | ClaudeResult]
 class ClaudeRunner(BaseRunner):
     """Runs Claude Code and streams parsed events."""
 
+    # Claude Code CLI flags vary by version. We default to attempting to enable
+    # thinking, but fall back gracefully if the local CLI doesn't recognize the
+    # flag(s).
+    _THINKING_ARG_TRIES: tuple[tuple[str, ...], ...] = (
+        ("--thinking",),
+        ("--thinking", "high"),
+    )
+
     def __init__(
         self,
         working_dir: str,
@@ -43,7 +53,12 @@ class ClaudeRunner(BaseRunner):
         super().__init__(working_dir, output_dir, session_name)
         self.process: asyncio.subprocess.Process | None = None
 
-    def _build_command(self, prompt: str, session_id: str | None) -> list[str]:
+    def _build_command(
+        self,
+        prompt: str,
+        session_id: str | None,
+        extra_args: list[str] | None = None,
+    ) -> list[str]:
         """Build the claude command line."""
         cmd = [
             "claude", "-p", prompt,
@@ -52,9 +67,39 @@ class ClaudeRunner(BaseRunner):
             "--verbose",
             "--dangerously-skip-permissions",
         ]
+
+        if extra_args:
+            cmd.extend(extra_args)
+
         if session_id:
             cmd.extend(["--resume", session_id])
         return cmd
+
+    def _thinking_args(self) -> list[list[str]]:
+        """Return thinking flag candidates.
+
+        Can be overridden via SWITCH_CLAUDE_THINKING_ARGS. Example:
+            SWITCH_CLAUDE_THINKING_ARGS='--thinking high'
+        """
+        raw = os.getenv("SWITCH_CLAUDE_THINKING_ARGS")
+        if raw and raw.strip():
+            return [shlex.split(raw.strip())]
+        return [list(args) for args in self._THINKING_ARG_TRIES]
+
+    @staticmethod
+    def _looks_like_unknown_flag_error(lines: list[str]) -> bool:
+        haystack = "\n".join(lines).lower()
+        needles = (
+            "unknown option",
+            "unrecognized option",
+            "unknown argument",
+            "unexpected argument",
+            "invalid option",
+            "unknown flag",
+            "no such option",
+            "flag provided but not defined",
+        )
+        return any(n in haystack for n in needles)
 
     def _handle_system_init(self, event: dict, state: RunState) -> Event | None:
         """Handle system init event - extracts session ID."""
@@ -171,42 +216,72 @@ class ClaudeRunner(BaseRunner):
             ("result", str) - Final result summary
             ("error", str) - Error message
         """
-        cmd = self._build_command(prompt, session_id)
-        state = RunState()
-
         log.info(f"Claude: {prompt[:50]}...")
         self._log_prompt(prompt)
 
-        try:
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=self.working_dir,
-                limit=10 * 1024 * 1024,
-            )
+        thinking_tries = self._thinking_args()
+        attempt_args: list[list[str] | None] = thinking_tries + [None]
 
-            if self.process.stdout is None:
-                raise RuntimeError("Claude process stdout missing")
+        for idx, extra_args in enumerate(attempt_args, 1):
+            state = RunState()
+            cmd = self._build_command(prompt, session_id, extra_args=extra_args)
+            emitted_any = False
+            non_json_lines: list[str] = []
 
-            async for raw_line in self.process.stdout:
-                line = raw_line.decode().strip()
-                if not line:
+            try:
+                self.process = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    cwd=self.working_dir,
+                    limit=10 * 1024 * 1024,
+                )
+
+                if self.process.stdout is None:
+                    raise RuntimeError("Claude process stdout missing")
+
+                async for raw_line in self.process.stdout:
+                    line = raw_line.decode(errors="replace").strip()
+                    if not line:
+                        continue
+
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        if len(non_json_lines) < 50:
+                            non_json_lines.append(line)
+                        continue
+
+                    for result in self._parse_event(event, state):
+                        emitted_any = True
+                        yield result
+
+                await self.process.wait()
+
+                # If we got no structured events and the process failed, this is
+                # often a CLI flag mismatch. Retry with the next arg variant.
+                if (
+                    not emitted_any
+                    and (self.process.returncode or 0) != 0
+                    and extra_args is not None
+                    and self._looks_like_unknown_flag_error(non_json_lines)
+                    and idx < len(attempt_args)
+                ):
+                    log.warning(
+                        "Claude CLI rejected thinking flags; retrying without them"
+                    )
                     continue
 
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+                # If we got nothing at all, surface the raw output.
+                if not emitted_any and non_json_lines:
+                    yield ("error", "Claude runner produced no JSON events:\n" + "\n".join(non_json_lines))
 
-                for result in self._parse_event(event, state):
-                    yield result
+                break
 
-            await self.process.wait()
-
-        except Exception as e:
-            log.exception("Claude runner error")
-            yield ("error", str(e))
+            except Exception as e:
+                log.exception("Claude runner error")
+                yield ("error", str(e))
+                break
 
     def cancel(self) -> None:
         """Terminate the running process."""
