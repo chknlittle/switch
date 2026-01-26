@@ -42,6 +42,40 @@
         "task": false,
         "skill": true
       }
+    },
+    "bridge-zen": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (GLM 4.7 via OpenCode Zen)",
+      "model": "opencode/glm-4.7",
+      "permission": "allow",
+      "tools": {
+        "bash": true,
+        "read": true,
+        "write": true,
+        "edit": true,
+        "glob": true,
+        "grep": true,
+        "webfetch": true,
+        "task": false,
+        "skill": true
+      }
+    },
+    "bridge-gpt-or": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (GPT 5.2 via OpenRouter)",
+      "model": "openrouter/openai/gpt-5.2",
+      "permission": "allow",
+      "tools": {
+        "bash": true,
+        "read": true,
+        "write": true,
+        "edit": true,
+        "glob": true,
+        "grep": true,
+        "webfetch": true,
+        "task": false,
+        "skill": true
+      }
     }
   }
 }

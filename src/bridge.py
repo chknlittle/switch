@@ -9,6 +9,8 @@ Orchestrator contacts:
 - cc@... - Claude Code sessions
 - oc@... - OpenCode with GLM 4.7 (local)
 - oc-gpt@... - OpenCode with GPT 5.2
+- oc-glm-zen@... - OpenCode with GLM 4.7 (Zen)
+- oc-gpt-or@... - OpenCode with GPT 5.2 (OpenRouter)
 
 Send any message to an orchestrator to create a new session.
 Each session appears as its own contact (e.g., react-app@...).

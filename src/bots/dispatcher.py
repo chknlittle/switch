@@ -31,6 +31,8 @@ class DispatcherBot(BaseXMPPBot):
     - cc: Claude Code
     - oc: OpenCode with GLM 4.7 (bridge agent)
     - oc-gpt: OpenCode with GPT 5.2 (bridge-gpt agent)
+    - oc-glm-zen: OpenCode with GLM 4.7 via Zen (bridge-zen agent)
+    - oc-gpt-or: OpenCode with GPT 5.2 via OpenRouter (bridge-gpt-or agent)
     """
 
     def __init__(
@@ -219,8 +221,8 @@ class DispatcherBot(BaseXMPPBot):
 
         result_text = ""
         async for event_type, data in runner.run(prompt):
-            if event_type == "result":
-                result_text = data.text if hasattr(data, "text") else ""
+            if event_type == "result" and isinstance(data, str):
+                result_text = data
             elif event_type == "error":
                 self.send_reply(f"Error: {data}", recipient=self.xmpp_recipient)
                 return
@@ -240,7 +242,9 @@ class DispatcherBot(BaseXMPPBot):
             "Orchestrators:\n"
             "  cc@ - Claude Code\n"
             "  oc@ - OpenCode (GLM 4.7)\n"
-            "  oc-gpt@ - OpenCode (GPT 5.2)\n\n"
+            "  oc-gpt@ - OpenCode (GPT 5.2)\n"
+            "  oc-glm-zen@ - OpenCode (GLM 4.7 Zen)\n"
+            "  oc-gpt-or@ - OpenCode (GPT 5.2 OpenRouter)\n\n"
             "Commands:\n"
             "  /list - show sessions\n"
             "  /recent - recent with status\n"

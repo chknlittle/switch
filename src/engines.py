@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 OPENCODE_MODEL_DEFAULT = "glm_vllm/glm-4.7-flash"
 OPENCODE_MODEL_GPT = "openai/gpt-5.2-codex"
+OPENCODE_MODEL_ZEN = "opencode/glm-4.7"
+OPENCODE_MODEL_GPT_OR = "openrouter/openai/gpt-5.2"
 
 
 @dataclass(frozen=True)
@@ -36,4 +38,10 @@ def normalize_engine(engine: str) -> str | None:
 
 
 def opencode_model_for_agent(agent: str | None) -> str:
-    return OPENCODE_MODEL_GPT if agent == "bridge-gpt" else OPENCODE_MODEL_DEFAULT
+    if agent == "bridge-gpt":
+        return OPENCODE_MODEL_GPT
+    if agent == "bridge-zen":
+        return OPENCODE_MODEL_ZEN
+    if agent == "bridge-gpt-or":
+        return OPENCODE_MODEL_GPT_OR
+    return OPENCODE_MODEL_DEFAULT
