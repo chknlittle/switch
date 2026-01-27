@@ -72,6 +72,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self.processing = False
         self.shutting_down = False
         self.message_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._pending_question_answers: dict[str, asyncio.Future[str]] = {}
         self.log = logging.getLogger(f"session.{session_name}")
         self.init_ralph(RalphLoopRepository(db))
         self.commands = CommandHandler(self)
@@ -89,7 +90,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         try:
             self.send_presence()
             await self.get_roster()
-            await self["xep_0280"].enable()  # type: ignore[attr-defined]
+            await self["xep_0280"].enable()  # type: ignore[attr-defined,union-attr]
             self.log.info("Connected")
             self.set_connected(True)
         except Exception:
@@ -600,13 +601,24 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 self.log.debug(f"OpenCode event #{event_count}: {event_type}")
 
                 if event_type == "session_id":
-                    self.sessions.update_opencode_session_id(self.session_name, content)
+                    session_id = content if isinstance(content, str) else None
+                    if session_id:
+                        self.sessions.update_opencode_session_id(
+                            self.session_name, session_id
+                        )
                 elif event_type == "text" and isinstance(content, str):
                     accumulated += content
                     response_parts = [accumulated]
                 elif event_type == "tool" and isinstance(content, str):
                     tool_summaries.append(content)
-                    if len(tool_summaries) - last_progress_at >= 8:
+                    # Emit progress a bit more eagerly for bash (users tend to
+                    # care about command execution), and at least once early so
+                    # short runs don't look stalled.
+                    is_bash = content.startswith("[tool:bash")
+                    if is_bash or len(tool_summaries) == 1:
+                        last_progress_at = len(tool_summaries)
+                        self.send_reply(f"... {content}")
+                    elif len(tool_summaries) - last_progress_at >= 8:
                         last_progress_at = len(tool_summaries)
                         self.send_reply(f"... {' '.join(tool_summaries[-3:])}")
                 elif event_type == "question" and isinstance(content, Question):
@@ -654,8 +666,6 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             pending_answers[question.request_id] = future
 
             # Store callback reference on self for message handler to find
-            if not hasattr(self, "_pending_question_answers"):
-                self._pending_question_answers = {}
             self._pending_question_answers[question.request_id] = future
 
             try:
@@ -669,8 +679,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 raise
             finally:
                 pending_answers.pop(question.request_id, None)
-                if hasattr(self, "_pending_question_answers"):
-                    self._pending_question_answers.pop(question.request_id, None)
+                self._pending_question_answers.pop(question.request_id, None)
 
         return question_callback
 
@@ -699,10 +708,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
     def answer_pending_question(self, answer: str) -> bool:
         """Answer a pending question. Called from message handler."""
-        if (
-            not hasattr(self, "_pending_question_answers")
-            or not self._pending_question_answers
-        ):
+        if not self._pending_question_answers:
             return False
 
         # Answer the most recent pending question

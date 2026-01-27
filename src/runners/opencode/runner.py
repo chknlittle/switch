@@ -465,7 +465,11 @@ class OpenCodeRunner(BaseRunner):
         event_queue: asyncio.Queue[dict] = asyncio.Queue()
 
         try:
-            timeout = aiohttp.ClientTimeout(total=600)
+            # Some OpenCode server modes keep /message open until completion.
+            # Make the HTTP client timeout configurable so long/slow sessions
+            # don't fail at a hard-coded limit.
+            http_timeout_s = float(os.getenv("OPENCODE_HTTP_TIMEOUT_S", "600"))
+            timeout = aiohttp.ClientTimeout(total=http_timeout_s)
             async with aiohttp.ClientSession(
                 auth=self._client.auth, timeout=timeout
             ) as session:
@@ -525,10 +529,19 @@ class OpenCodeRunner(BaseRunner):
         except Exception as e:
             state.saw_error = True
             log.exception(f"OpenCode runner exception: {type(e).__name__}: {e}")
-            message = str(e).strip()
-            if not message:
-                message = type(e).__name__
-            yield ("error", message)
+            if isinstance(e, asyncio.TimeoutError):
+                # aiohttp can raise a TimeoutError with an empty message.
+                # Surface the configured timeout to make this actionable.
+                http_timeout_s = float(os.getenv("OPENCODE_HTTP_TIMEOUT_S", "600"))
+                yield (
+                    "error",
+                    f"TimeoutError (HTTP timeout after {http_timeout_s:.0f}s; set OPENCODE_HTTP_TIMEOUT_S to increase)",
+                )
+            else:
+                message = str(e).strip()
+                if not message:
+                    message = type(e).__name__
+                yield ("error", message)
         finally:
             try:
                 await self._cleanup_tasks(sse_task, message_task)
