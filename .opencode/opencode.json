@@ -76,6 +76,40 @@
         "task": false,
         "skill": true
       }
+    },
+    "bridge-kimi": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Kimi K2.5 via OpenRouter)",
+      "model": "openrouter/moonshotai/kimi-k2.5",
+      "permission": "allow",
+      "tools": {
+        "bash": true,
+        "read": true,
+        "write": true,
+        "edit": true,
+        "glob": true,
+        "grep": true,
+        "webfetch": true,
+        "task": false,
+        "skill": true
+      }
+    },
+    "bridge-kimi-ms": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Kimi K2.5 via Moonshot)",
+      "model": "moonshotai/kimi-k2.5",
+      "permission": "allow",
+      "tools": {
+        "bash": true,
+        "read": true,
+        "write": true,
+        "edit": true,
+        "glob": true,
+        "grep": true,
+        "webfetch": true,
+        "task": false,
+        "skill": true
+      }
     }
   }
 }
