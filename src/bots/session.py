@@ -68,7 +68,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self.ejabberd_ctl = ejabberd_ctl
         self.manager = manager
         self.runner: OpenCodeRunner | ClaudeRunner | None = None
+        self._run_task: asyncio.Future | None = None
         self.processing = False
+        self.shutting_down = False
         self.message_queue: asyncio.Queue[str] = asyncio.Queue()
         self.log = logging.getLogger(f"session.{session_name}")
         self.init_ralph(RalphLoopRepository(db))
@@ -95,8 +97,11 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             self.set_connected(False)
 
     def on_disconnected(self, event):
-        self.log.warning("Disconnected, reconnecting...")
         self.set_connected(False)
+        if self.shutting_down:
+            self.log.info("Disconnected during shutdown; not reconnecting")
+            return
+        self.log.warning("Disconnected, reconnecting...")
         asyncio.ensure_future(self._reconnect())
 
     def _build_engine_handlers(self) -> dict[str, EngineHandler]:
@@ -128,16 +133,10 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         await asyncio.sleep(5)
         self.connect()
 
-    async def _self_destruct(self):
-        await asyncio.sleep(1)
-        self.disconnect()
-
-    # -------------------------------------------------------------------------
-    # Message sending
-    # -------------------------------------------------------------------------
-
     def send_reply(self, text: str, recipient: str | None = None, max_len: int = 3500):
         """Send message, splitting if needed."""
+        if self.shutting_down:
+            return
         target = recipient or self.xmpp_recipient
         if len(text) <= max_len:
             msg = self.make_message(mto=target, mbody=text, mtype="chat")
@@ -154,6 +153,77 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             msg = self.make_message(mto=target, mbody=body, mtype="chat")
             msg["chat_state"] = "active" if i == total else "composing"
             msg.send()
+
+    # -------------------------------------------------------------------------
+    # Cancellation / shutdown
+    # -------------------------------------------------------------------------
+
+    def cancel_operations(self, *, notify: bool = False) -> bool:
+        """Best-effort cancellation of in-flight work.
+
+        Returns True if there was something to cancel.
+        """
+        cancelled_any = False
+
+        if self.ralph_loop:
+            cancelled_any = True
+            self.ralph_loop.cancel()
+
+        if self.runner and self.processing:
+            cancelled_any = True
+            try:
+                self.runner.cancel()
+            except Exception:
+                pass
+
+        if self._run_task and not self._run_task.done():
+            cancelled_any = True
+            self._run_task.cancel()
+
+        if notify and cancelled_any:
+            self.send_reply("Cancelling current work...")
+
+        return cancelled_any
+
+    async def hard_kill(self) -> None:
+        """Hard-kill this session.
+
+        - Cancels in-flight work
+        - Prevents reconnect
+        - Deletes XMPP account, kills tmux tail, marks session closed
+        """
+        if self.shutting_down:
+            return
+
+        self.shutting_down = True
+
+        # Stop any in-flight work and drop queued messages.
+        self.cancel_operations(notify=False)
+        while not self.message_queue.empty():
+            try:
+                self.message_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        # Give the ack message (sent before hard_kill) a brief chance to flush.
+        await asyncio.sleep(0.25)
+
+        try:
+            if self.manager:
+                await self.manager.kill_session(self.session_name)
+            else:
+                # Fallback: local cleanup if manager is unavailable.
+                from src.helpers import delete_xmpp_account, kill_tmux_session
+
+                username = self.boundjid.user
+                delete_xmpp_account(username, self.ejabberd_ctl, self.xmpp_domain, self.log)
+                kill_tmux_session(self.session_name)
+                self.sessions.close(self.session_name)
+        finally:
+            try:
+                self.disconnect()
+            except Exception:
+                pass
 
     def _split_message(self, text: str, max_len: int) -> list[str]:
         """Split text into chunks respecting paragraph boundaries."""
@@ -191,12 +261,18 @@ class SessionBot(RalphMixin, BaseXMPPBot):
     async def on_message(self, msg):
         try:
             await self._handle_session_message(msg)
+        except asyncio.CancelledError:
+            # Cancels are expected (e.g., /cancel, /kill).
+            return
         except Exception:
             self.log.exception("Session message error")
             self.send_reply("Error handling message")
 
     async def _handle_session_message(self, msg):
         if msg["type"] not in ("chat", "normal") or not msg["body"]:
+            return
+
+        if self.shutting_down:
             return
 
         sender = str(msg["from"].bare)
@@ -345,6 +421,8 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
     async def process_message(self, body: str, trigger_response: bool = True):
         """Send message to agent and relay response."""
+        if self.shutting_down:
+            return
         self.processing = True
         if trigger_response:
             self.send_typing()
@@ -367,12 +445,18 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             if not handler:
                 self.send_reply(f"Unknown engine '{session.active_engine}'.")
                 return
-            await handler.run(body, session)
+            # ensure_future accepts any awaitable and gives us a cancellable future.
+            self._run_task = asyncio.ensure_future(handler.run(body, session))
+            await self._run_task
 
+        except asyncio.CancelledError:
+            self.log.info("Message processing cancelled")
+            return
         except Exception as e:
             self.log.exception("Error")
             self.send_reply(f"Error: {e}")
         finally:
+            self._run_task = None
             self.processing = False
 
     async def run_opencode_one_shot(
@@ -510,6 +594,8 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             async for event_type, content in self.runner.run(
                 body, session.opencode_session_id
             ):
+                if self.shutting_down:
+                    return
                 event_count += 1
                 self.log.debug(f"OpenCode event #{event_count}: {event_type}")
 
@@ -547,6 +633,8 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                     self.send_reply("Cancelled.")
 
             self.log.info(f"OpenCode run completed after {event_count} events")
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             self.log.exception(f"Exception in _run_opencode loop: {e}")
             self.send_reply(f"Error during OpenCode run: {e}")

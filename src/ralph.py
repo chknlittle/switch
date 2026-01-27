@@ -121,12 +121,14 @@ class RalphLoop:
         self.current_iteration = 0
         self.total_cost = 0.0
         self.cancelled = False
+        self._cancel_event = asyncio.Event()
         self.loop_id: int | None = None
         self.log = logging.getLogger(f"ralph.{session_bot.session_name}")
 
     def cancel(self):
         """Signal loop to stop after current iteration."""
         self.cancelled = True
+        self._cancel_event.set()
         self._save_state("cancelled")
 
     def _save_state(self, status: str = "running"):
@@ -257,6 +259,10 @@ class RalphLoop:
                 return
 
             self._save_state()
-            await asyncio.sleep(self.wait_seconds)
+            if self.wait_seconds > 0:
+                try:
+                    await asyncio.wait_for(self._cancel_event.wait(), timeout=self.wait_seconds)
+                except asyncio.TimeoutError:
+                    pass
 
         self._save_state("finished")

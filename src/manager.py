@@ -102,6 +102,17 @@ class SessionManager:
         if not session or session.status == "closed":
             return session is not None
 
+        # If the bot is running, cancel in-flight work and prevent reconnects
+        # before we delete the account.
+        bot = self.session_bots.get(name)
+        if bot:
+            try:
+                bot.shutting_down = True
+                bot.cancel_operations(notify=False)
+                bot.disconnect()
+            except Exception:
+                pass
+
         username = session.xmpp_jid.split("@")[0]
         delete_xmpp_account(username, self.ejabberd_ctl, self.xmpp_domain, log)
         kill_tmux_session(name)

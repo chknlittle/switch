@@ -84,7 +84,7 @@ class SessionRepository:
             active_engine=row["active_engine"] or "opencode",
             opencode_agent=row["opencode_agent"] or "bridge",
             model_id=row["model_id"] or OPENCODE_MODEL_DEFAULT,
-            reasoning_mode=row["reasoning_mode"] or "normal",
+            reasoning_mode=row["reasoning_mode"] or "high",
             tmux_name=row["tmux_name"],
             created_at=row["created_at"],
             last_active=row["last_active"],
@@ -141,13 +141,14 @@ class SessionRepository:
         model_id: str = OPENCODE_MODEL_DEFAULT,
         opencode_agent: str = "bridge",
         active_engine: str = "opencode",
+        reasoning_mode: str = "high",
     ) -> Session:
         now = datetime.now().isoformat()
         self.conn.execute(
             """INSERT INTO sessions
                (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                model_id, opencode_agent, active_engine)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                model_id, opencode_agent, active_engine, reasoning_mode)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 xmpp_jid,
@@ -158,6 +159,7 @@ class SessionRepository:
                 model_id,
                 opencode_agent,
                 active_engine,
+                reasoning_mode,
             ),
         )
         self.conn.commit()
@@ -361,7 +363,7 @@ def init_db() -> sqlite3.Connection:
             active_engine TEXT DEFAULT 'opencode',
             opencode_agent TEXT DEFAULT 'bridge',
             model_id TEXT DEFAULT 'glm_vllm/glm-4.7-flash',
-            reasoning_mode TEXT DEFAULT 'normal',
+            reasoning_mode TEXT DEFAULT 'high',
             tmux_name TEXT,
             created_at TEXT NOT NULL,
             last_active TEXT NOT NULL,
@@ -404,7 +406,7 @@ def init_db() -> sqlite3.Connection:
         ("active_engine", "TEXT DEFAULT 'opencode'"),
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
         ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_GPT}'"),
-        ("reasoning_mode", "TEXT DEFAULT 'normal'"),
+        ("reasoning_mode", "TEXT DEFAULT 'high'"),
     ]
     for col_name, col_type in migrations:
         try:

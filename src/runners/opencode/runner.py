@@ -407,7 +407,12 @@ class OpenCodeRunner(BaseRunner):
     async def _cleanup_tasks(
         self, sse_task: asyncio.Task | None, message_task: asyncio.Task | None
     ) -> None:
-        """Clean up SSE and abort tasks."""
+        """Best-effort cleanup.
+
+        Cleanup must never raise: it's invoked from a `finally:` block and
+        any exception here would mask the original failure (e.g. SSE connect
+        errors) and/or crash the session loop.
+        """
         self._cancelled = True
         if sse_task:
             sse_task.cancel()
@@ -415,14 +420,21 @@ class OpenCodeRunner(BaseRunner):
                 await sse_task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                # Never allow cleanup to mask the real error.
+                pass
         if (
             self._client_session
             and self._active_session_id
             and not self._client_session.closed
         ):
-            await self._client.abort_session(
-                self._client_session, self._active_session_id
-            )
+            try:
+                await self._client.abort_session(
+                    self._client_session, self._active_session_id
+                )
+            except Exception:
+                # Best-effort.
+                pass
         if self._abort_task and not self._abort_task.done():
             try:
                 await self._abort_task
@@ -518,7 +530,11 @@ class OpenCodeRunner(BaseRunner):
                 message = type(e).__name__
             yield ("error", message)
         finally:
-            await self._cleanup_tasks(sse_task, message_task)
+            try:
+                await self._cleanup_tasks(sse_task, message_task)
+            except Exception:
+                # Cleanup is best-effort; never raise from finally.
+                pass
 
     def _make_fallback_error(self, state: RunState) -> Event:
         """Create an error event when OpenCode exits without proper result."""

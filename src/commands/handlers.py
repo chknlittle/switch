@@ -71,22 +71,18 @@ class CommandHandler:
 
     @command("/kill")
     async def kill(self, _body: str) -> bool:
-        """End the session."""
-        self.bot.send_reply("Ending session. Goodbye!")
-        asyncio.ensure_future(self.bot._self_destruct())
+        """Hard-kill the session (cancel work, close account, stop reconnect)."""
+        # Send ack before we start teardown (account deletion can race delivery).
+        self.bot.send_reply("Killing session (hard kill)...")
+        asyncio.ensure_future(self.bot.hard_kill())
         return True
 
     @command("/cancel")
     async def cancel(self, _body: str) -> bool:
         """Cancel current operation."""
-        if self.bot.ralph_loop:
-            self.bot.ralph_loop.cancel()
-            if self.bot.runner:
-                self.bot.runner.cancel()
-            self.bot.send_reply("Cancelling Ralph loop...")
-        elif self.bot.runner and self.bot.processing:
-            self.bot.runner.cancel()
-            self.bot.send_reply("Cancelling current run...")
+        cancelled = self.bot.cancel_operations(notify=False)
+        if cancelled:
+            self.bot.send_reply("Cancelling current work...")
         else:
             self.bot.send_reply("Nothing running to cancel.")
         return True

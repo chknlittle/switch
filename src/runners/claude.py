@@ -30,7 +30,9 @@ class ClaudeResult:
     duration_s: float
 
 
-Event = tuple[str, str | ClaudeResult]
+# NOTE: ClaudeRunner currently only yields string payloads.
+# Keep the event type accurate so downstream consumers can type-narrow cleanly.
+Event = tuple[str, str]
 
 
 class ClaudeRunner(BaseRunner):
