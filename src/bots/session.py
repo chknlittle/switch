@@ -134,7 +134,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         await asyncio.sleep(5)
         self.connect()
 
-    def send_reply(self, text: str, recipient: str | None = None, max_len: int = 3500):
+    def send_reply(self, text: str, recipient: str | None = None, max_len: int = 100000):
         """Send message, splitting if needed."""
         if self.shutting_down:
             return
