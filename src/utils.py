@@ -4,12 +4,50 @@ Shared utilities for XMPP bridge components.
 """
 
 import asyncio
+import json
 import os
 import subprocess
 from pathlib import Path
 
 from slixmpp.clientxmpp import ClientXMPP
 from slixmpp.xmlstream import ET
+
+
+SWITCH_META_NS = "urn:switch:message-meta"
+
+
+def build_message_meta(
+    meta_type: str,
+    *,
+    meta_tool: str | None = None,
+    meta_attrs: dict[str, str] | None = None,
+    meta_payload: object | None = None,
+) -> ET.Element:
+    """Build a Switch message meta extension element.
+
+    This keeps structured data out of the message body, while remaining
+    backward-compatible with clients that ignore unknown XML extensions.
+    """
+
+    meta = ET.Element(f"{{{SWITCH_META_NS}}}meta")
+    meta.set("type", meta_type)
+    if meta_tool:
+        meta.set("tool", meta_tool)
+
+    if meta_attrs:
+        for k, v in meta_attrs.items():
+            if not k or v is None:
+                continue
+            if k in ("type", "tool"):
+                continue
+            meta.set(str(k), str(v))
+
+    if meta_payload is not None:
+        payload = ET.SubElement(meta, f"{{{SWITCH_META_NS}}}payload")
+        payload.set("format", "json")
+        payload.text = json.dumps(meta_payload, ensure_ascii=True, separators=(",", ":"))
+
+    return meta
 
 # =============================================================================
 # Environment Loading
@@ -163,7 +201,14 @@ class BaseXMPPBot(ClientXMPP):
         self.enable_starttls = False
         self.enable_direct_tls = False
         self.enable_plaintext = True
-        self.connect((server, port))  # type: ignore[arg-type]
+        # Slixmpp defaults can still attempt STARTTLS depending on server features.
+        # Be explicit: plaintext TCP only.
+        kwargs = {
+            "use_ssl": False,
+            "force_starttls": False,
+            "disable_starttls": True,
+        }
+        self.connect((server, port), **kwargs)  # type: ignore[arg-type,call-arg]
 
     def set_connected(self, connected: bool) -> None:
         if connected:
@@ -189,6 +234,7 @@ class BaseXMPPBot(ClientXMPP):
         meta_type: str | None = None,
         meta_tool: str | None = None,
         meta_attrs: dict[str, str] | None = None,
+        meta_payload: object | None = None,
     ):
         """Send a chat message to recipient."""
         to = recipient or self.recipient
@@ -197,22 +243,14 @@ class BaseXMPPBot(ClientXMPP):
         msg = self.make_message(mto=to, mbody=text, mtype="chat")
         msg["chat_state"] = "active"
 
-        # Optional message metadata extension (XMPP custom namespace).
-        # Old clients will ignore unknown extension elements.
+        # Optional message metadata extension.
         if meta_type:
-            meta = ET.Element("{urn:switch:message-meta}meta")
-            meta.set("type", meta_type)
-            if meta_tool:
-                meta.set("tool", meta_tool)
-
-            if meta_attrs:
-                for k, v in meta_attrs.items():
-                    if not k or v is None:
-                        continue
-                    # Reserve "type" and "tool" for explicit args.
-                    if k in ("type", "tool"):
-                        continue
-                    meta.set(str(k), str(v))
+            meta = build_message_meta(
+                meta_type,
+                meta_tool=meta_tool,
+                meta_attrs=meta_attrs,
+                meta_payload=meta_payload,
+            )
             msg.xml.append(meta)
 
         msg.send()

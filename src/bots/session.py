@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
-
-from slixmpp.xmlstream import ET
 
 from src.bots.ralph_mixin import RalphMixin
 from src.commands import CommandHandler
@@ -24,7 +24,7 @@ from src.helpers import (
     register_unique_account,
 )
 from src.runners import ClaudeRunner, OpenCodeResult, OpenCodeRunner, Question
-from src.utils import BaseXMPPBot
+from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
 
 if TYPE_CHECKING:
     import sqlite3
@@ -80,7 +80,9 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         # When set, queued messages should be dropped and the queue drain loop
         # should stop after the current in-flight work unwinds.
         self._cancel_queue_drain = False
-        self._pending_question_answers: dict[str, asyncio.Future[str]] = {}
+        # request_id -> Future(answer) where answer is either a raw user string
+        # or a structured OpenCode-style answers array.
+        self._pending_question_answers: dict[str, asyncio.Future] = {}
         self.log = logging.getLogger(f"session.{session_name}")
         self.init_ralph(RalphLoopRepository(db))
         self.commands = CommandHandler(self)
@@ -150,6 +152,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         meta_type: str | None = None,
         meta_tool: str | None = None,
         meta_attrs: dict[str, str] | None = None,
+        meta_payload: object | None = None,
     ):
         """Send message, splitting if needed."""
         if self.shutting_down:
@@ -162,18 +165,12 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             msg["chat_state"] = "active"
 
             if meta_type:
-                meta = ET.Element("{urn:switch:message-meta}meta")
-                meta.set("type", meta_type)
-                if meta_tool:
-                    meta.set("tool", meta_tool)
-
-                if meta_attrs:
-                    for k, v in meta_attrs.items():
-                        if not k or v is None:
-                            continue
-                        if k in ("type", "tool"):
-                            continue
-                        meta.set(str(k), str(v))
+                meta = build_message_meta(
+                    meta_type,
+                    meta_tool=meta_tool,
+                    meta_attrs=meta_attrs,
+                    meta_payload=meta_payload,
+                )
                 msg.xml.append(meta)
 
             msg.send()
@@ -189,18 +186,12 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             msg["chat_state"] = "active" if i == total else "composing"
 
             if meta_type:
-                meta = ET.Element("{urn:switch:message-meta}meta")
-                meta.set("type", meta_type)
-                if meta_tool:
-                    meta.set("tool", meta_tool)
-
-                if meta_attrs:
-                    for k, v in meta_attrs.items():
-                        if not k or v is None:
-                            continue
-                        if k in ("type", "tool"):
-                            continue
-                        meta.set(str(k), str(v))
+                meta = build_message_meta(
+                    meta_type,
+                    meta_tool=meta_tool,
+                    meta_attrs=meta_attrs,
+                    meta_payload=meta_payload,
+                )
                 msg.xml.append(meta)
 
             msg.send()
@@ -338,6 +329,27 @@ class SessionBot(RalphMixin, BaseXMPPBot):
     # Message handling
     # -------------------------------------------------------------------------
 
+    def _extract_switch_meta(self, msg) -> tuple[str | None, dict[str, str] | None, object | None]:
+        """Extract Switch message meta extension (best-effort)."""
+        try:
+            for child in getattr(msg, "xml", []) or []:
+                if getattr(child, "tag", None) != f"{{{SWITCH_META_NS}}}meta":
+                    continue
+                attrs = dict(getattr(child, "attrib", {}) or {})
+                meta_type = attrs.get("type")
+
+                payload_obj: object | None = None
+                payload = child.find(f"{{{SWITCH_META_NS}}}payload")
+                if payload is not None and (payload.get("format") or "").lower() == "json":
+                    raw = (payload.text or "").strip()
+                    if raw:
+                        payload_obj = json.loads(raw)
+
+                return meta_type, attrs, payload_obj
+        except Exception:
+            return None, None, None
+        return None, None, None
+
     async def on_message(self, msg):
         try:
             await self._handle_session_message(msg)
@@ -349,7 +361,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             self.send_reply("Error handling message")
 
     async def _handle_session_message(self, msg):
-        if msg["type"] not in ("chat", "normal") or not msg["body"]:
+        if msg["type"] not in ("chat", "normal"):
             return
 
         if self.shutting_down:
@@ -360,8 +372,28 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         if sender not in (self.xmpp_recipient, dispatcher_jid):
             return
 
-        body = msg["body"].strip()
+        meta_type, meta_attrs, meta_payload = self._extract_switch_meta(msg)
+
+        # Allow meta-only messages (e.g., button-based question replies).
+        body = (msg["body"] or "").strip()
         is_scheduled = sender == dispatcher_jid
+
+        if meta_type == "question-reply":
+            request_id = (meta_attrs or {}).get("request_id")
+            answer_obj: object | None = None
+            if isinstance(meta_payload, dict):
+                if "answers" in meta_payload:
+                    answer_obj = meta_payload.get("answers")
+                elif "text" in meta_payload:
+                    answer_obj = meta_payload.get("text")
+            if answer_obj is None:
+                answer_obj = body
+            if self.answer_pending_question(answer_obj, request_id=request_id):
+                self.log.info("Answered pending question via meta reply")
+            return
+
+        if not body:
+            return
 
         if body.startswith("@"):
             body = "/" + body[1:]
@@ -834,67 +866,146 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
     def _create_question_callback(self):
         """Create a callback for handling AI questions via XMPP."""
-        pending_answers: dict[str, asyncio.Future] = {}
 
         async def question_callback(question: Question) -> list[list[str]]:
             """Handle a question from the AI by asking the user via XMPP."""
-            # Format the question for display
             question_text = self._format_question(question)
-            self.send_reply(f"[AI Question]\n{question_text}")
+            self.send_reply(
+                question_text,
+                meta_type="question",
+                meta_tool="question",
+                meta_attrs={
+                    "version": "1",
+                    "engine": "opencode",
+                    "request_id": question.request_id,
+                    "question_count": str(len(question.questions or [])),
+                },
+                meta_payload={
+                    "version": 1,
+                    "engine": "opencode",
+                    "request_id": question.request_id,
+                    "questions": question.questions,
+                },
+            )
 
             # Create a future to wait for the answer
-            future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
-            pending_answers[question.request_id] = future
-
-            # Store callback reference on self for message handler to find
+            future: asyncio.Future = asyncio.get_event_loop().create_future()
             self._pending_question_answers[question.request_id] = future
 
             try:
                 # Wait for user response with timeout
                 answer = await asyncio.wait_for(future, timeout=300)  # 5 min timeout
-                # Return one answer array per question (positional, in order)
-                # For now we only support answering the first question
-                return [[answer]] if question.questions else []
+                parsed = self._parse_question_answer(question, answer)
+                return parsed
             except asyncio.TimeoutError:
                 self.send_reply("[Question timed out - proceeding without answer]")
                 raise
             finally:
-                pending_answers.pop(question.request_id, None)
                 self._pending_question_answers.pop(question.request_id, None)
 
         return question_callback
 
+    def _parse_question_answer(self, question: Question, answer: object) -> list[list[str]]:
+        """Parse a user answer into OpenCode's expected answers shape."""
+        if isinstance(answer, list):
+            # Allow structured answers: [["Option A"], ["Option B"]]
+            return answer  # type: ignore[return-value]
+
+        text = str(answer or "").strip()
+        qs = question.questions or []
+        if not qs:
+            return []
+
+        # Split into one segment per question when possible.
+        segments: list[str] = []
+        if "\n" in text:
+            segments = [s.strip() for s in text.splitlines() if s.strip()]
+        if not segments and ";" in text and len(qs) > 1:
+            segments = [s.strip() for s in text.split(";") if s.strip()]
+        if not segments:
+            segments = [text]
+
+        answers: list[list[str]] = []
+        for idx, q in enumerate(qs):
+            seg = segments[idx] if idx < len(segments) else (segments[0] if segments else "")
+            options = q.get("options") if isinstance(q, dict) else None
+            if not isinstance(options, list) or not options:
+                answers.append([seg] if seg else [])
+                continue
+
+            labels: list[str] = []
+            for opt in options:
+                if isinstance(opt, dict):
+                    lab = str(opt.get("label", "") or "").strip()
+                    if lab:
+                        labels.append(lab)
+
+            chosen: list[str] = []
+
+            # If the whole segment matches a label (including spaces), accept it.
+            seg_norm = seg.strip().lower()
+            direct = next((lab for lab in labels if lab.lower() == seg_norm), None)
+            if direct:
+                answers.append([direct])
+                continue
+
+            for tok in re.split(r"[\s,]+", seg.strip()):
+                if not tok:
+                    continue
+                if tok.isdigit():
+                    n = int(tok)
+                    if 1 <= n <= len(labels):
+                        chosen.append(labels[n - 1])
+                    continue
+                match = next((lab for lab in labels if lab.lower() == tok.lower()), None)
+                if match:
+                    chosen.append(match)
+
+            # De-dupe while preserving order.
+            seen: set[str] = set()
+            chosen = [x for x in chosen if not (x in seen or seen.add(x))]
+            answers.append(chosen)
+
+        return answers
+
     def _format_question(self, question: Question) -> str:
         """Format a Question object for display to user."""
-        parts = []
-        for q in question.questions:
-            header = q.get("header", "")
-            text = q.get("question", "")
+        parts: list[str] = []
+        parts.append("[Question]")
+        for q_idx, q in enumerate(question.questions or [], 1):
+            if not isinstance(q, dict):
+                continue
+            header = str(q.get("header", "") or "").strip()
+            text = str(q.get("question", "") or "").strip()
             options = q.get("options", [])
 
             if header:
-                parts.append(f"**{header}**")
-            parts.append(text)
+                parts.append(f"{q_idx}) {header}")
+            elif len(question.questions or []) > 1:
+                parts.append(f"{q_idx})")
+            if text:
+                parts.append(text)
 
-            if options:
+            if isinstance(options, list) and options:
+                parts.append("Options:")
                 for i, opt in enumerate(options, 1):
-                    label = opt.get("label", f"Option {i}")
-                    desc = opt.get("description", "")
-                    if desc:
-                        parts.append(f"  {i}. {label} - {desc}")
-                    else:
-                        parts.append(f"  {i}. {label}")
+                    if not isinstance(opt, dict):
+                        continue
+                    label = str(opt.get("label", f"Option {i}") or f"Option {i}").strip()
+                    desc = str(opt.get("description", "") or "").strip()
+                    parts.append(f"  {i}) {label}" + (f" - {desc}" if desc else ""))
 
-        return "\n".join(parts)
+        parts.append("Reply with option number(s) (e.g., '1' or '1,2') or label text.")
+        return "\n".join([p for p in parts if p])
 
-    def answer_pending_question(self, answer: str) -> bool:
+    def answer_pending_question(self, answer: object, *, request_id: str | None = None) -> bool:
         """Answer a pending question. Called from message handler."""
         if not self._pending_question_answers:
             return False
 
-        # Answer the most recent pending question
-        request_id = list(self._pending_question_answers.keys())[-1]
-        future = self._pending_question_answers.get(request_id)
+        # Default to the most recent pending question.
+        rid = request_id or list(self._pending_question_answers.keys())[-1]
+        future = self._pending_question_answers.get(rid)
         if future and not future.done():
             future.set_result(answer)
             return True
