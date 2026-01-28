@@ -45,9 +45,12 @@ def build_message_meta(
     if meta_payload is not None:
         payload = ET.SubElement(meta, f"{{{SWITCH_META_NS}}}payload")
         payload.set("format", "json")
-        payload.text = json.dumps(meta_payload, ensure_ascii=True, separators=(",", ":"))
+        payload.text = json.dumps(
+            meta_payload, ensure_ascii=True, separators=(",", ":")
+        )
 
     return meta
+
 
 # =============================================================================
 # Environment Loading
@@ -79,7 +82,9 @@ def get_xmpp_config() -> dict:
     """Get XMPP configuration from environment."""
     server = os.getenv("XMPP_SERVER", "your.xmpp.server")
     domain = os.getenv("XMPP_DOMAIN", server)
-    raw_directory_jid = os.getenv("SWITCH_DIRECTORY_JID", f"switch-dir@{domain}").strip()
+    raw_directory_jid = os.getenv(
+        "SWITCH_DIRECTORY_JID", f"switch-dir@{domain}"
+    ).strip()
     # ejabberd answers disco#items for bare user JIDs itself (PEP), so our
     # directory bot must be addressed as a *full* JID resource to reach the
     # connected client.
@@ -93,8 +98,11 @@ def get_xmpp_config() -> dict:
         "pubsub_service": os.getenv("SWITCH_PUBSUB_JID", f"pubsub.{domain}"),
         "directory": {
             "jid": raw_directory_jid,
-            "password": os.getenv("SWITCH_DIRECTORY_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
-            "autocreate": os.getenv("SWITCH_DIRECTORY_AUTOCREATE", "1") not in ("0", "false", "False"),
+            "password": os.getenv(
+                "SWITCH_DIRECTORY_PASSWORD", os.getenv("XMPP_PASSWORD", "")
+            ),
+            "autocreate": os.getenv("SWITCH_DIRECTORY_AUTOCREATE", "1")
+            not in ("0", "false", "False"),
         },
         "ejabberd_ctl": os.getenv(
             "EJABBERD_CTL",
@@ -125,14 +133,18 @@ def get_xmpp_config() -> dict:
             },
             "oc-glm-zen": {
                 "jid": os.getenv("OC_GLM_ZEN_JID", f"oc-glm-zen@{domain}"),
-                "password": os.getenv("OC_GLM_ZEN_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
+                "password": os.getenv(
+                    "OC_GLM_ZEN_PASSWORD", os.getenv("XMPP_PASSWORD", "")
+                ),
                 "engine": "opencode",
                 "agent": "bridge-zen",
                 "label": "GLM 4.7 Zen",
             },
             "oc-gpt-or": {
                 "jid": os.getenv("OC_GPT_OR_JID", f"oc-gpt-or@{domain}"),
-                "password": os.getenv("OC_GPT_OR_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
+                "password": os.getenv(
+                    "OC_GPT_OR_PASSWORD", os.getenv("XMPP_PASSWORD", "")
+                ),
                 "engine": "opencode",
                 "agent": "bridge-gpt-or",
                 "label": "GPT 5.2 OR",
@@ -201,14 +213,9 @@ class BaseXMPPBot(ClientXMPP):
         self.enable_starttls = False
         self.enable_direct_tls = False
         self.enable_plaintext = True
-        # Slixmpp defaults can still attempt STARTTLS depending on server features.
-        # Be explicit: plaintext TCP only.
-        kwargs = {
-            "use_ssl": False,
-            "force_starttls": False,
-            "disable_starttls": True,
-        }
-        self.connect((server, port), **kwargs)  # type: ignore[arg-type,call-arg]
+        # Slixmpp 1.12+ uses connect(host, port) and relies on the
+        # enable_* flags above for TLS behavior.
+        self.connect(server, port)
 
     def set_connected(self, connected: bool) -> None:
         if connected:

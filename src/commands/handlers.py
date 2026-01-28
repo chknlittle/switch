@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
@@ -169,6 +171,53 @@ class CommandHandler:
             return True
         handler.reset()
         self.bot.send_reply("Session reset.")
+        return True
+
+    @command("/qtest")
+    async def qtest(self, _body: str) -> bool:
+        """Send a Question v1 XMPP meta message to test clients."""
+        request_id = f"qtest_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        questions = [
+            {
+                "header": "Question UI test",
+                "question": "Does this render as a card with buttons?",
+                "options": [
+                    {"label": "Yes", "description": "Card + buttons"},
+                    {"label": "No", "description": "Plain text bubble"},
+                ],
+                "multiple": False,
+            }
+        ]
+
+        self.bot.send_reply(
+            "[Question UI test]",
+            meta_type="question",
+            meta_tool="question",
+            meta_attrs={
+                "version": "1",
+                "engine": "switch",
+                "request_id": request_id,
+                "question_count": str(len(questions)),
+            },
+            meta_payload={
+                "version": 1,
+                "engine": "switch",
+                "request_id": request_id,
+                "questions": questions,
+            },
+        )
+
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self.bot._pending_question_answers[request_id] = future
+        try:
+            answer = await asyncio.wait_for(future, timeout=120)
+        except asyncio.TimeoutError:
+            self.bot.send_reply("[qtest timed out waiting for reply]")
+            raise
+        finally:
+            self.bot._pending_question_answers.pop(request_id, None)
+
+        self.bot.send_reply(f"[qtest got reply] {answer!r}")
         return True
 
     @command("/ralph-cancel", "/ralph-stop")
