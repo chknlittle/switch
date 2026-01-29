@@ -60,8 +60,10 @@ cat ~/switch/output/session-name.log
 
 When context gets large or you need to hand off work:
 
+IMPORTANT: When the user asks to spawn a new session, you MUST actually execute the spawn command (via your Bash tool / shell access). Do not merely tell the user what command to run. Do not try to message the dispatcher directly.
+
 ```bash
-cd ~/switch && python scripts/spawn-session.py "HANDOFF: what was done, what's next, key files to read"
+cd ~/switch && PYTHONPATH=. uv run python scripts/spawn-session.py "HANDOFF: what was done, what's next, key files to read"
 ```
 
 The new session appears as a new contact for the user. Always capture discoveries to memory before spawning.
@@ -118,7 +120,7 @@ cat ~/switch/skills/<skill-name>.md
 | Session logs | `~/switch/output/` |
 | Skills/runbooks | `~/switch/skills/` |
 | List sessions | `~/switch/scripts/sessions.sh list` |
-| Spawn session | `cd ~/switch && python scripts/spawn-session.py "message"` |
+| Spawn session | `cd ~/switch && PYTHONPATH=. uv run python scripts/spawn-session.py "message"` |
 | Close session | `cd ~/switch && python scripts/close-session.py <name>` |
 | Real-time logs | `journalctl --user -u switch -f` |
 
