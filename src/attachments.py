@@ -107,10 +107,22 @@ class AttachmentStore:
         sess = _safe_slug(session_name)
         return f"{self.public_base_url}/attachments/{self.token}/{sess}/{filename}"
 
+    def _batch_dir(self, session_name: str) -> tuple[Path, str]:
+        """Return (dir_path, rel_prefix) for a single message's attachments."""
+        ts = int(time.time() * 1000)
+        prefix = f"att_{ts}_{uuid.uuid4().hex[:6]}"
+        local_dir = self.session_dir(session_name) / prefix
+        local_dir.mkdir(parents=True, exist_ok=True)
+        return local_dir, prefix
+
     async def download_images(self, session_name: str, urls: Iterable[str]) -> list[Attachment]:
         out: list[Attachment] = []
         max_bytes = int(os.getenv("SWITCH_ATTACHMENT_MAX_BYTES", str(10 * 1024 * 1024)))
         timeout_s = float(os.getenv("SWITCH_ATTACHMENT_FETCH_TIMEOUT_S", "20"))
+
+        batch_dir: Path | None = None
+        batch_prefix: str | None = None
+        idx = 0
 
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout_s)
@@ -144,11 +156,14 @@ class AttachmentStore:
 
                         sha = hashlib.sha256(data).hexdigest()
                         ext = _guess_ext(mime, url=url)
-                        ts = int(time.time() * 1000)
-                        stem = f"img_{ts}_{uuid.uuid4().hex[:10]}"
-                        filename = stem + ext
-                        local_dir = self.session_dir(session_name)
-                        path = local_dir / filename
+
+                        if batch_dir is None or batch_prefix is None:
+                            batch_dir, batch_prefix = self._batch_dir(session_name)
+
+                        idx += 1
+                        stem = f"img_{idx:02d}_{uuid.uuid4().hex[:6]}"
+                        filename = f"{batch_prefix}/{stem}{ext}"
+                        path = batch_dir / f"{stem}{ext}"
                         path.write_bytes(bytes(data))
 
                         att_id = f"att_{uuid.uuid4().hex[:12]}"
