@@ -6,6 +6,8 @@
 output/
 sessions.db
 tmp/
+uploads/*
+!uploads/.gitkeep
 __pycache__/
 *.pyc
 *.pyo

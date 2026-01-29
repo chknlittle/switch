@@ -95,14 +95,8 @@ class OpenCodeClient:
         agent: str,
         reasoning_mode: str,
     ) -> object | None:
+        # Attachments are represented as local paths in the prompt text.
         parts: list[dict[str, object]] = [{"type": "text", "text": prompt}]
-        if attachments:
-            for a in attachments:
-                if a.kind != "image":
-                    continue
-                if not a.public_url:
-                    continue
-                parts.append({"type": "file", "mime": a.mime, "url": a.public_url})
 
         body: dict[str, object] = {"parts": parts}
         if model_payload:

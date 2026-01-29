@@ -17,6 +17,16 @@ HISTORY_PATH = Path.home() / ".claude" / "history.jsonl"
 ACTIVITY_LOG_PATH = Path.home() / ".claude" / "activity.jsonl"
 
 
+def _is_conflict_output(output: str) -> bool:
+    out_l = (output or "").lower()
+    return (
+        "conflict" in out_l
+        or "already registered" in out_l
+        or "already" in out_l
+        or "exists" in out_l
+    )
+
+
 def slugify(text: str, max_len: int = 20) -> str:
     """Convert text to a safe session/username."""
     words = text.lower().split()[:4]
@@ -76,13 +86,14 @@ def create_xmpp_account(
     When allow_conflict=True, "already exists" conflicts are treated as success so
     startup paths can be idempotent.
     """
-    success, output = run_ejabberdctl(ejabberd_ctl, "register", username, domain, password)
+    success, output = run_ejabberdctl(
+        ejabberd_ctl, "register", username, domain, password
+    )
     if success:
         log.info(f"Created XMPP account: {username}@{domain}")
         return True, output
 
-    out_l = (output or "").lower()
-    if "conflict" in out_l or "already registered" in out_l or "already" in out_l:
+    if _is_conflict_output(output):
         # ejabberd returns conflict when the account already exists.
         log.info(f"XMPP account already exists: {username}@{domain}")
         return (True, output) if allow_conflict else (False, output)
@@ -97,7 +108,7 @@ def register_unique_account(
     ejabberd_ctl: str,
     domain: str,
     log,
-    max_attempts: int = 5,
+    max_attempts: int = 50,
 ) -> tuple[str, str, str] | None:
     """Register a unique XMPP account, retrying on conflicts.
 
@@ -109,6 +120,9 @@ def register_unique_account(
 
     sessions = SessionRepository(db)
 
+    base_name = (base_name or "session").strip()[:20].rstrip("-")
+
+    # First pass: deterministic numeric suffixes.
     for idx in range(max_attempts):
         suffix = "" if idx == 0 else f"-{idx + 1}"
         trim_len = max(1, 20 - len(suffix))
@@ -118,10 +132,31 @@ def register_unique_account(
             continue
 
         password = secrets.token_urlsafe(16)
-        success, output = create_xmpp_account(candidate, password, ejabberd_ctl, domain, log)
+        success, output = create_xmpp_account(
+            candidate, password, ejabberd_ctl, domain, log
+        )
         if success:
             return candidate, password, f"{candidate}@{domain}"
-        if "conflict" in output.lower():
+        if _is_conflict_output(output):
+            continue
+        break
+
+    # Second pass: random suffix to avoid exhausting numeric space.
+    for _ in range(20):
+        suffix = f"-{secrets.token_hex(2)}"  # 4 hex chars
+        trim_len = max(1, 20 - len(suffix))
+        candidate = base_name[:trim_len].rstrip("-") + suffix
+
+        if sessions.exists(candidate):
+            continue
+
+        password = secrets.token_urlsafe(16)
+        success, output = create_xmpp_account(
+            candidate, password, ejabberd_ctl, domain, log
+        )
+        if success:
+            return candidate, password, f"{candidate}@{domain}"
+        if _is_conflict_output(output):
             continue
         break
 

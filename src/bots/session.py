@@ -683,12 +683,6 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 self.session_name, "user", body_for_history, session.active_engine
             )
 
-            if attachments and session.active_engine == "opencode":
-                if not any(a.public_url for a in attachments):
-                    self.send_reply(
-                        "[Note] OpenCode image attach needs a public URL. Set SWITCH_ATTACHMENTS_ENABLE=1, SWITCH_ATTACHMENTS_TOKEN, and SWITCH_PUBLIC_ATTACHMENT_BASE_URL (public HTTPS) to attach images."
-                    )
-
             if not trigger_response:
                 return
 
@@ -881,6 +875,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self, body: str, session, attachments: list[Attachment] | None
     ):
         """Run OpenCode and handle events."""
+        body = self._augment_prompt_with_attachments(body, attachments)
         # Set up question callback for handling AI questions
         question_callback = self._create_question_callback()
 
@@ -902,7 +897,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self.log.info(f"Starting OpenCode run for: {body[:50]}...")
         try:
             async for event_type, content in self.runner.run(
-                body, session.opencode_session_id, attachments=attachments
+                body, session.opencode_session_id, attachments=None
             ):
                 if self.shutting_down:
                     return

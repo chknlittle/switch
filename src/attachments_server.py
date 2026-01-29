@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from aiohttp import web
@@ -14,19 +13,20 @@ def _safe_part(text: str) -> str:
     return "".join(out) or "_"
 
 
-async def start_attachments_server(base_dir: Path) -> tuple[web.AppRunner, str, int]:
+async def start_attachments_server(
+    base_dir: Path,
+    *,
+    token: str,
+    host: str = "127.0.0.1",
+    port: int = 7777,
+) -> tuple[web.AppRunner, str, int]:
     """Start a tiny HTTP server to serve attachments.
 
     Exposes: /attachments/{token}/{session}/{filename}
     """
-    token = (os.getenv("SWITCH_ATTACHMENTS_TOKEN") or "").strip()
+    token = (token or "").strip()
     if not token:
-        raise RuntimeError(
-            "SWITCH_ATTACHMENTS_TOKEN is required when enabling attachments server"
-        )
-
-    host = os.getenv("SWITCH_ATTACHMENTS_HOST", "127.0.0.1")
-    port = int(os.getenv("SWITCH_ATTACHMENTS_PORT", "7777"))
+        raise RuntimeError("Attachments server requires a token")
 
     app = web.Application()
 

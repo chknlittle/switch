@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from src.attachments_config import AttachmentsConfig, get_attachments_config
+
 
 @dataclass(frozen=True)
 class Attachment:
@@ -85,17 +87,12 @@ class AttachmentStore:
         public_base_url: str | None = None,
         token: str | None = None,
     ):
-        self.base_dir = base_dir or Path(
-            os.getenv("SWITCH_ATTACHMENTS_DIR", "tmp/attachments")
-        )
-        self.public_base_url = (
-            public_base_url
-            if public_base_url is not None
-            else (os.getenv("SWITCH_PUBLIC_ATTACHMENT_BASE_URL") or "").rstrip("/")
-        )
-        self.token = (
-            token if token is not None else (os.getenv("SWITCH_ATTACHMENTS_TOKEN") or "")
-        )
+        cfg: AttachmentsConfig = get_attachments_config()
+
+        self.base_dir = base_dir or cfg.base_dir
+        resolved_public = public_base_url if public_base_url is not None else cfg.public_base_url
+        self.public_base_url = (resolved_public or "").rstrip("/")
+        self.token = token if token is not None else cfg.token
 
         self.base_dir.mkdir(parents=True, exist_ok=True)
 

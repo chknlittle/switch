@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 
 from src.attachments import AttachmentStore
+from src.attachments_config import get_attachments_config
 from src.attachments_server import start_attachments_server
 from src.db import init_db
 from src.helpers import create_xmpp_account
@@ -57,15 +58,25 @@ log = logging.getLogger("bridge")
 async def main():
     db = init_db()
 
-    # Optional: serve attachments over HTTP so OpenCode can fetch them using a
-    # public URL (typically through a reverse proxy/tunnel).
+    # Serve attachments over HTTP so chat clients can open `public_url` links.
     attachments_server = None
-    attachments_store = AttachmentStore()
-    if os.getenv("SWITCH_ATTACHMENTS_ENABLE", "").lower() in {"1", "true", "yes"}:
-        attachments_server, host, port = await start_attachments_server(
-            attachments_store.base_dir
-        )
-        log.info(f"Attachments server listening on http://{host}:{port}")
+    attachments_cfg = get_attachments_config()
+    attachments_store = AttachmentStore(
+        base_dir=attachments_cfg.base_dir,
+        public_base_url=attachments_cfg.public_base_url,
+        token=attachments_cfg.token,
+    )
+    if os.getenv("SWITCH_ATTACHMENTS_ENABLE", "1").lower() in {"1", "true", "yes"}:
+        try:
+            attachments_server, host, port = await start_attachments_server(
+                attachments_store.base_dir,
+                token=attachments_cfg.token,
+                host=attachments_cfg.host,
+                port=attachments_cfg.port,
+            )
+            log.info(f"Attachments server listening on http://{host}:{port}")
+        except Exception:
+            log.exception("Failed to start attachments server")
 
     manager = SessionManager(
         db=db,
