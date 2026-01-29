@@ -4,15 +4,21 @@ Send a message to a dispatcher to spawn a new session.
 
 Usage:
     spawn-session.py [--dispatcher <name>] <message>
+    spawn-session.py --list-dispatchers
 
 Example:
     spawn-session.py "Continue moonshot-survival work. Context: ..."
 
     # Use a specific orchestrator/dispatcher (e.g. oc-gpt-or, oc-kimi-coding)
     spawn-session.py --dispatcher oc-kimi-coding "Reply only: ok"
+
+Notes:
+    - Default dispatcher can be set with SWITCH_DEFAULT_DISPATCHER.
+    - Use -h/--help to print this message (does not spawn a session).
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -31,19 +37,36 @@ cfg = get_xmpp_config()
 XMPP_SERVER = cfg["server"]
 
 
+def _default_dispatcher_name() -> str:
+    # Prefer explicit env override, fall back to a sane default.
+    return (os.getenv("SWITCH_DEFAULT_DISPATCHER") or "oc-gpt").strip() or "oc-gpt"
+
+
 def _parse_args(argv: list[str]) -> tuple[str, str] | None:
     if not argv:
         return None
 
-    dispatcher_name = "cc"
-    if len(argv) >= 2 and argv[0] in {"--dispatcher", "-d"}:
+    if argv[0] in {"-h", "--help"}:
+        print(__doc__)
+        return ("__exit__", "")
+
+    if argv[0] == "--list-dispatchers":
+        return ("__list__", "")
+
+    dispatcher_name = _default_dispatcher_name()
+
+    if argv[0].startswith("--dispatcher="):
+        dispatcher_name = argv[0].split("=", 1)[1]
+        argv = argv[1:]
+    elif len(argv) >= 2 and argv[0] in {"--dispatcher", "-d"}:
         dispatcher_name = argv[1]
         argv = argv[2:]
 
-    if not argv:
+    message = " ".join(argv).strip()
+    if not message:
         return None
 
-    return dispatcher_name, " ".join(argv)
+    return dispatcher_name, message
 
 
 class SpawnBot(BaseXMPPBot):
@@ -74,7 +97,16 @@ async def main():
 
     dispatcher_name, message = parsed
 
+    if dispatcher_name == "__exit__":
+        sys.exit(0)
+
     dispatchers = cfg.get("dispatchers", {})
+
+    if dispatcher_name == "__list__":
+        known = "\n".join(f"- {name}" for name in sorted(dispatchers.keys())) or "(none)"
+        print("Known dispatchers:\n" + known)
+        sys.exit(0)
+
     dispatcher = dispatchers.get(dispatcher_name)
     if not dispatcher:
         known = ", ".join(sorted(dispatchers.keys())) or "none"

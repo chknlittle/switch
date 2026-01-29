@@ -51,13 +51,13 @@ If yes, use the memory skills to persist discoveries before spawning:
 
 ## Usage
 
-    cd ~/switch && PYTHONPATH=. uv run python scripts/spawn-session.py "<handoff message>"
+    cd ~/switch && PYTHONPATH=. ~/switch/.venv/bin/python scripts/spawn-session.py --dispatcher oc-gpt "<handoff message>"
 
 ## Formatting the Handoff Message
 
 Combine the template into a single message for the new session:
 
-    cd ~/switch && PYTHONPATH=. uv run python scripts/spawn-session.py "HANDOFF FROM PREVIOUS SESSION
+    cd ~/switch && PYTHONPATH=. ~/switch/.venv/bin/python scripts/spawn-session.py --dispatcher oc-gpt "HANDOFF FROM PREVIOUS SESSION
 
     COMPLETED
     - Implemented X in src/foo.py
@@ -83,7 +83,7 @@ Combine the template into a single message for the new session:
 
 For straightforward handoffs without much context:
 
-    cd ~/switch && PYTHONPATH=. uv run python scripts/spawn-session.py "Continue [project].
+    cd ~/switch && PYTHONPATH=. ~/switch/.venv/bin/python scripts/spawn-session.py --dispatcher oc-gpt "Continue [project].
 
     Done: [brief summary]
     Next: [what to do]
@@ -91,12 +91,13 @@ For straightforward handoffs without much context:
 
 ## Dispatchers
 
-Three dispatchers are available:
-- `cc@` - Claude Code (default)
-- `oc@` - OpenCode
-- `oc-gpt@` - OpenCode with GPT
+Dispatchers are configured in `~/switch/.env` and can be listed with:
 
-Use `cc@` unless otherwise specified. To spawn to a different dispatcher, message that dispatcher's JID directly instead of the default.
+    cd ~/switch && PYTHONPATH=. ~/switch/.venv/bin/python scripts/spawn-session.py --list-dispatchers
+
+Default dispatcher:
+- `scripts/spawn-session.py` defaults to `oc-gpt`.
+- Override with `SWITCH_DEFAULT_DISPATCHER` or pass `--dispatcher <name>`.
 
 ## Important Notes
 
