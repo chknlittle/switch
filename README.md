@@ -42,7 +42,26 @@ flowchart LR
 ```
 <!-- /DIAGRAM:system -->
 
-Chat with AI coding assistants from any open source chat app. Each conversation becomes a separate contact, making it easy to manage multiple concurrent sessions from your phone or desktop.
+Chat with AI coding assistants from any open source chat app.
+
+## One Contact = One Session
+
+Most AI chat systems (including [MoltBot](https://github.com/moltbot/moltbot)) give you a single bot contact. You talk to "the bot" and it manages sessions internally with commands like `/new` or `/reset`. Sessions exist, but they're invisible — hidden behind one conversational interface.
+
+Switch inverts this. Every session is a separate XMPP contact in your roster:
+
+```
+fix-auth-bug@dev.local
+refactor-db@dev.local
+add-tests@dev.local
+```
+
+This is not a cosmetic difference. It changes how you work:
+
+- **Parallel conversations are native.** Three sessions means three chat windows, not one window with context-switching commands. Your chat app's UI — tabs, notifications, unread counts — now manages your agent swarm.
+- **Sessions are portable.** Open a session on your phone, continue on desktop. Each contact syncs independently through your XMPP client.
+- **Sessions can message each other.** An agent can spawn a child session and receive its results as XMPP messages. Coordination happens through the same protocol you use.
+- **History is per-contact.** Scroll up in any session to see its full history. No single bot log to grep through.
 
 Under the hood, Switch uses **XMPP** — an open chat protocol (the same one that powers Google Talk, WhatsApp's backend, etc.). You don't need to know or care about the protocol. All it means in practice is that you pick a free, open source chat app — [Conversations](https://conversations.im/) on Android, [Monal](https://monal-im.org/) on iOS, and on desktop the XMPP client of choice is [switch-mac-os](https://github.com/0xrin1/switch-mac-os/tree/main) (macOS). [Gajim](https://gajim.org/) and [Dino](https://dino.im/) also work.
 
@@ -51,8 +70,6 @@ This project is heavily vibe coded and heavily WIP. Expect rough edges and break
 No vendor lock-in. No proprietary client. Just a normal chat app you already know how to use.
 
 Designed to run on a dedicated Linux machine (old laptop, mini PC, home server) so the AI has real system access to do useful work.
-
-Switch is the calm center for a swarm of agents. Spin up multiple sessions at once, let them talk to each other, and keep every thread portable across phone and desktop. Your sessions are not tied to a single provider, so you keep the flexibility of multiple backends while still getting the muscle of agent harnesses.
 
 ## Features
 
