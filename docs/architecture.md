@@ -56,18 +56,18 @@ flowchart TB
 
   User["User XMPP Client"]
   XMPP["ejabberd (XMPP)"]
-  Orchestrators["Orchestrators\n(DispatcherBot + SessionManager + lifecycle)"]
+  Orchestrators["Orchestrators<br/>(DispatcherBot + SessionManager + lifecycle)"]
 
-  Adapter["Session XMPP Adapter\n(SessionBot + parsing + typing + event sink)"]
-  Core["[Q] Session Core\n(SessionRuntime)\n- queue + cancel\n- run (messages + Ralph)"]
+  Adapter["Session XMPP Adapter<br/>(SessionBot + parsing + typing + event sink)"]
+  Core["[Q] Session Core<br/>(SessionRuntime)<br/>- queue + cancel<br/>- run (messages + Ralph)"]
 
   subgraph Runners["Runners"]
     direction TB
-    Local["Local runner\n(ClaudeRunner + tools)"]
-    Remote["Remote runner\n(OpenCodeRunner + OpenCode server)"]
+    Local["Local runner<br/>(ClaudeRunner + tools)"]
+    Remote["Remote runner<br/>(OpenCodeRunner + OpenCode server)"]
   end
 
-  Storage["Storage\n(sessions.db + attachments)"]
+  Storage["Storage<br/>(sessions.db + attachments)"]
 
   %% High-level flows
   User <--> XMPP
@@ -99,10 +99,10 @@ flowchart TB
 flowchart TB
   %% OpenCode path (big blocks)
 
-  Core["Session Core\n(SessionRuntime)"]
-  Adapter["Session XMPP Adapter\n(SessionBot + event sink)"]
+  Core["Session Core<br/>(SessionRuntime)"]
+  Adapter["Session XMPP Adapter<br/>(SessionBot + event sink)"]
 
-  OpenCodeRunner["OpenCodeRunner\n(HTTP + SSE)"]
+  OpenCodeRunner["OpenCodeRunner<br/>(HTTP + SSE)"]
   OpenCodeServer["External OpenCode server"]
 
   %% Main execution
