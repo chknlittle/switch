@@ -13,25 +13,25 @@ flowchart LR
   Server["External OpenCode server\nHTTP + SSE"]
 
   %% Wiring
-  SessionBot -->|create_runner(engine=opencode)| Runner
+  SessionBot -->|create_runner engine=opencode| Runner
   Runner --> Config
   Runner --> Client
   Runner --> Transport
   Runner --> Processor
   Runner --> Pipe
 
-  Client <==>|/global/event SSE| Server
+  Client <--> |/global/event SSE| Server
   Client -->|POST /session| Server
-  Client -->|POST /session/{id}/message| Server
-  Transport -.->|POST /session/{id}/abort| Server
+  Client -->|POST /session/<id>/message| Server
+  Transport -.->|POST /session/<id>/abort| Server
 
   %% Questions loop
   Q["question asked\n(event)"]
-  A["answer_question()\nquestion_callback"]
+  A["answer_question\nquestion_callback"]
 
   Pipe --> Q --> SessionBot
   SessionBot --> A --> Client
-  Client -->|POST /question/{rid}/reply| Server
+  Client -->|POST /question/<rid>/reply| Server
 
   %% Events back
   Pipe -->|events: tool/text/result| Runner --> SessionBot

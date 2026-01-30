@@ -17,13 +17,13 @@ flowchart LR
     Inbound["Inbound parse\n(inbound.py)"]
     Typing["Typing keepalive\n(typing.py)"]
     Actor["[Q] SessionActor\n(queue + serialize)\n(actor.py)"]
-    Cancel["[X] cancel_operations()\n(drop queue + cancel runner)"]
+    Cancel["[X] cancel_operations\n(drop queue + cancel runner)"]
   end
 
   subgraph Runners["Runners"]
     direction TB
-    Registry["create_runner()\n(src/runners/registry.py)"]
-    Ports["Runner port\n(run() + cancel())\n(src/runners/ports.py)"]
+    Registry["create_runner\n(src/runners/registry.py)"]
+    Ports["Runner port\n(run + cancel)\n(src/runners/ports.py)"]
     Claude["ClaudeRunner\n(local claude CLI)"]
     OpenCode["OpenCodeRunner\n(server API)"]
   end
@@ -55,7 +55,7 @@ flowchart LR
   Actor -->|dequeue 1| Registry --> Ports
   Ports -->|engine=claude| Claude
   Ports -->|engine=opencode| OpenCode
-  OpenCode <==>|HTTP + SSE| OpenCodeSrv
+  OpenCode <--> |HTTP + SSE| OpenCodeSrv
 
   %% Streaming back
   Claude -->|events: tool/text/result| SessionBot
@@ -64,7 +64,7 @@ flowchart LR
   %% Cancellation
   SessionBot -.-> Cancel
   Cancel -.->|drop queued| Actor
-  Cancel -.->|Runner.cancel()| Ports
+  Cancel -.->|Runner cancel| Ports
 
   classDef cancel stroke:#b00020,stroke-width:2px,fill:#fff5f6,color:#111;
   class Cancel,Actor cancel;

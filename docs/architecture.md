@@ -70,13 +70,13 @@ flowchart LR
     Inbound["Inbound parse\n(inbound.py)"]
     Typing["Typing keepalive\n(typing.py)"]
     Actor["[Q] SessionActor\n(queue + serialize)\n(actor.py)"]
-    Cancel["[X] cancel_operations()\n(drop queue + cancel runner)"]
+    Cancel["[X] cancel_operations\n(drop queue + cancel runner)"]
   end
 
   subgraph Runners["Runners"]
     direction TB
-    Registry["create_runner()\n(src/runners/registry.py)"]
-    Ports["Runner port\n(run() + cancel())\n(src/runners/ports.py)"]
+    Registry["create_runner\n(src/runners/registry.py)"]
+    Ports["Runner port\n(run + cancel)\n(src/runners/ports.py)"]
     Claude["ClaudeRunner\n(local claude CLI)"]
     OpenCode["OpenCodeRunner\n(server API)"]
   end
@@ -108,7 +108,7 @@ flowchart LR
   Actor -->|dequeue 1| Registry --> Ports
   Ports -->|engine=claude| Claude
   Ports -->|engine=opencode| OpenCode
-  OpenCode <==>|HTTP + SSE| OpenCodeSrv
+  OpenCode <--> |HTTP + SSE| OpenCodeSrv
 
   %% Streaming back
   Claude -->|events: tool/text/result| SessionBot
@@ -117,7 +117,7 @@ flowchart LR
   %% Cancellation
   SessionBot -.-> Cancel
   Cancel -.->|drop queued| Actor
-  Cancel -.->|Runner.cancel()| Ports
+  Cancel -.->|Runner cancel| Ports
 
   classDef cancel stroke:#b00020,stroke-width:2px,fill:#fff5f6,color:#111;
   class Cancel,Actor cancel;
@@ -142,25 +142,25 @@ flowchart LR
   Server["External OpenCode server\nHTTP + SSE"]
 
   %% Wiring
-  SessionBot -->|create_runner(engine=opencode)| Runner
+  SessionBot -->|create_runner engine=opencode| Runner
   Runner --> Config
   Runner --> Client
   Runner --> Transport
   Runner --> Processor
   Runner --> Pipe
 
-  Client <==>|/global/event SSE| Server
+  Client <--> |/global/event SSE| Server
   Client -->|POST /session| Server
-  Client -->|POST /session/{id}/message| Server
-  Transport -.->|POST /session/{id}/abort| Server
+  Client -->|POST /session/<id>/message| Server
+  Transport -.->|POST /session/<id>/abort| Server
 
   %% Questions loop
   Q["question asked\n(event)"]
-  A["answer_question()\nquestion_callback"]
+  A["answer_question\nquestion_callback"]
 
   Pipe --> Q --> SessionBot
   SessionBot --> A --> Client
-  Client -->|POST /question/{rid}/reply| Server
+  Client -->|POST /question/<rid>/reply| Server
 
   %% Events back
   Pipe -->|events: tool/text/result| Runner --> SessionBot
