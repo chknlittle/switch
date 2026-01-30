@@ -100,11 +100,48 @@ uv sync
 # Configure
 cp .env.example .env
 # Edit .env with your chat server details
+```
 
-# Agent instructions are symlinked to home (for Claude Code and OpenCode)
-# Edit ~/switch/AGENTS.md - symlinks at ~/AGENTS.md and ~/CLAUDE.md point here
+### Symlink Agent Instructions (Required)
 
-# Run
+These symlinks let Claude Code and OpenCode find their instructions from anywhere on the system:
+
+```bash
+# Agent instructions (AGENTS.md) - required for both Claude Code and OpenCode
+ln -sf ~/switch/AGENTS.md ~/CLAUDE.md       # Claude Code looks here
+ln -sf ~/switch/AGENTS.md ~/AGENTS.md       # OpenCode looks here
+
+# OpenCode config (custom models and agent profiles)
+mkdir -p ~/.config/opencode
+ln -sf ~/switch/.opencode/opencode.json ~/.config/opencode/config.json
+```
+
+### Sync OpenCode Skills (Required for OpenCode)
+
+Skills (spawn-session, close-sessions, memory, etc.) must be synced to OpenCode format:
+
+```bash
+# Sync skills from ~/switch/skills/ to ~/.config/opencode/skill/
+python ~/switch/scripts/sync-to-opencode.py
+```
+
+Re-run this command after adding or modifying skills in `~/switch/skills/`.
+
+### Verify Setup
+
+```bash
+ls -la ~/CLAUDE.md ~/AGENTS.md ~/.config/opencode/config.json ~/.config/opencode/skill/
+```
+
+You should see:
+- `~/CLAUDE.md` → `~/switch/AGENTS.md`
+- `~/AGENTS.md` → `~/switch/AGENTS.md`
+- `~/.config/opencode/config.json` → `~/switch/.opencode/opencode.json`
+- `~/.config/opencode/skill/` containing folders like `spawn-session/`, `close-sessions/`, etc.
+
+### Run
+
+```bash
 uv run python -m src.bridge
 ```
 

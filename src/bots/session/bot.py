@@ -8,12 +8,19 @@ import json
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from src.bots.ralph_mixin import RalphMixin
+from src.bots.session.actor import SessionActor
+from src.bots.session.inbound import (
+    extract_attachment_urls,
+    extract_switch_meta,
+    normalize_leading_at,
+    strip_urls_from_body,
+)
+from src.bots.session.typing import TypingIndicator
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
 from src.engines import get_engine_spec
@@ -61,6 +68,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
     ):
         super().__init__(jid, password, recipient=xmpp_recipient)
         self.session_name = session_name
+        self.log = logging.getLogger(f"session.{self.session_name}")
         self.db = db
         self.sessions = SessionRepository(db)
         self.messages = MessageRepository(db)
@@ -75,24 +83,49 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self._run_task: asyncio.Future | None = None
         self.processing = False
         self.shutting_down = False
-        self._typing_task: asyncio.Task | None = None
-        self._typing_last_sent = 0.0
-        self.message_queue: asyncio.Queue[tuple[str, list[Attachment]]] = asyncio.Queue()
-        # When set, queued messages should be dropped and the queue drain loop
-        # should stop after the current in-flight work unwinds.
-        self._cancel_queue_drain = False
+        self._typing = TypingIndicator(
+            send_typing=self.send_typing,
+            is_active=lambda: self.processing,
+            is_shutting_down=lambda: self.shutting_down,
+        )
+
+        self._actor = SessionActor(
+            process_one=self._actor_process_one,
+            on_error=lambda e: self.send_reply(f"Error: {e}"),
+            start_work=self._actor_start_work,
+            finish_work=self._actor_finish_work,
+            is_shutting_down=lambda: self.shutting_down,
+            log_exception=lambda msg: self.log.exception(msg),
+        )
+
         # request_id -> Future(answer) where answer is either a raw user string
         # or a structured OpenCode-style answers array.
         self._pending_question_answers: dict[str, asyncio.Future] = {}
         self.attachment_store = AttachmentStore()
-        self.log = logging.getLogger(f"session.{session_name}")
-        self.init_ralph(RalphLoopRepository(db))
+        self.init_ralph(RalphLoopRepository(self.db))
         self.commands = CommandHandler(self)
         self._engine_handlers = self._build_engine_handlers()
 
         self.add_event_handler("session_start", self.on_start)
         self.add_event_handler("message", self.on_message)
         self.add_event_handler("disconnected", self.on_disconnected)
+
+    async def _actor_process_one(
+        self, body: str, trigger_response: bool, attachments: object
+    ) -> None:
+        await self._process_one_message_now(
+            body,
+            trigger_response=trigger_response,
+            attachments=attachments if isinstance(attachments, list) else None,
+        )
+
+    def _actor_start_work(self) -> None:
+        self.processing = True
+        self._typing.start()
+
+    def _actor_finish_work(self) -> None:
+        self.processing = False
+        self._typing.stop()
 
     # -------------------------------------------------------------------------
     # XMPP lifecycle
@@ -226,16 +259,8 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         """
         cancelled_any = False
 
-        # Always stop queue churn: drop any queued messages and prevent the
-        # drain loop from continuing once the current run unwinds.
-        self._cancel_queue_drain = True
-        if not self.message_queue.empty():
+        if self._actor.cancel_queued():
             cancelled_any = True
-            while not self.message_queue.empty():
-                try:
-                    self.message_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
 
         if self.ralph_loop:
             cancelled_any = True
@@ -266,13 +291,10 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         self.shutting_down = True
 
+        self._actor.shutdown()
+
         # Stop any in-flight work and drop queued messages.
         self.cancel_operations(notify=False)
-        while not self.message_queue.empty():
-            try:
-                self.message_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
 
         self.send_reply("Session closed. Goodbye!")
 
@@ -321,25 +343,6 @@ class SessionBot(RalphMixin, BaseXMPPBot):
     # Message handling
     # -------------------------------------------------------------------------
 
-    def _extract_switch_meta(self, msg) -> tuple[str | None, dict[str, str] | None, object | None]:
-        """Extract Switch message meta extension (best-effort)."""
-        for child in getattr(msg, "xml", []) or []:
-            if getattr(child, "tag", None) != f"{{{SWITCH_META_NS}}}meta":
-                continue
-            attrs = dict(getattr(child, "attrib", {}) or {})
-            meta_type = attrs.get("type")
-
-            payload_obj: object | None = None
-            payload = child.find(f"{{{SWITCH_META_NS}}}payload")
-            if payload is not None and (payload.get("format") or "").lower() == "json":
-                raw = (payload.text or "").strip()
-                if raw:
-                    payload_obj = json.loads(raw)
-
-            return meta_type, attrs, payload_obj
-
-        return None, None, None
-
     async def on_message(self, msg):
         await self.guard(self._handle_session_message(msg), context="session.on_message")
 
@@ -355,19 +358,19 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         if sender not in (self.xmpp_recipient, dispatcher_jid):
             return
 
-        meta_type, meta_attrs, meta_payload = self._extract_switch_meta(msg)
+        meta_type, meta_attrs, meta_payload = extract_switch_meta(msg, meta_ns=SWITCH_META_NS)
 
         # Allow meta-only messages (e.g., button-based question replies).
         body = (msg["body"] or "").strip()
         is_scheduled = sender == dispatcher_jid
 
         attachments: list[Attachment] = []
-        urls = self._extract_attachment_urls(msg, body)
+        urls = extract_attachment_urls(msg, body)
         if urls:
             attachments = await self.attachment_store.download_images(self.session_name, urls)
             if attachments:
                 self._send_attachment_meta(attachments)
-                body = self._strip_urls_from_body(body, urls)
+                body = strip_urls_from_body(body, urls)
 
         if meta_type == "question-reply":
             request_id = (meta_attrs or {}).get("request_id")
@@ -388,8 +391,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         if not body:
             return
 
-        if body.startswith("@"):
-            body = "/" + body[1:]
+        body = normalize_leading_at(body)
 
         self.log.info(f"Message{'[scheduled]' if is_scheduled else ''}: {body[:50]}...")
 
@@ -407,60 +409,26 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             self.log.info(f"Answered pending question with: {body[:50]}...")
             return
 
-        # Busy handling - queue messages instead of rejecting
-        if self.processing:
-            if is_scheduled:
-                return
-            if body.startswith("+") and self.manager:
-                await self.spawn_sibling_session(body[1:].strip())
-                return
-            # Queue the message for later processing
-            await self.message_queue.put((body, attachments))
-            queue_size = self.message_queue.qsize()
-            self.send_reply(f"Queued ({queue_size} pending)")
+        # Scheduled messages are best-effort; drop them if we're already running.
+        if is_scheduled and self.processing:
             return
 
-        await self._process_with_queue(body, attachments)
+        # If we're busy, allow +spawn to fork work instead of queuing it.
+        if self.processing and (not is_scheduled) and body.startswith("+") and self.manager:
+            await self.spawn_sibling_session(body[1:].strip())
+            return
 
-    _URL_RE = re.compile(r"https?://[^\s<>\]\)\}]+", re.IGNORECASE)
-
-    def _extract_attachment_urls(self, msg, body: str) -> list[str]:
-        urls: list[str] = []
-
-        # jabber:x:oob and similar: scan all descendants for <url> elements.
-        try:
-            for el in getattr(msg, "xml", []) or []:
-                for child in list(el.iter()):
-                    tag = getattr(child, "tag", "")
-                    if tag.endswith("}url") or tag == "url":
-                        text = (getattr(child, "text", None) or "").strip()
-                        if text.startswith("http"):
-                            urls.append(text)
-        except Exception:
-            pass
-
-        for m in self._URL_RE.finditer(body or ""):
-            raw = m.group(0)
-            url = raw.rstrip(".,;:!?")
-            if url.startswith("http"):
-                urls.append(url)
-
-        seen: set[str] = set()
-        out: list[str] = []
-        for u in urls:
-            if u in seen:
-                continue
-            seen.add(u)
-            out.append(u)
-        return out
-
-    def _strip_urls_from_body(self, body: str, urls: list[str]) -> str:
-        if not body:
-            return body
-        out = body
-        for u in urls:
-            out = out.replace(u, "")
-        return " ".join(out.split()).strip()
+        queued_before = self.processing or (self._actor.pending_count() > 0)
+        await self._actor.enqueue(
+            body,
+            attachments,
+            trigger_response=True,
+            scheduled=is_scheduled,
+            wait=False,
+        )
+        if queued_before and not is_scheduled:
+            self.send_reply(f"Queued ({self._actor.pending_count()} pending)")
+        return
 
     def _send_attachment_meta(self, attachments: list[Attachment]) -> None:
         payload = {
@@ -569,47 +537,6 @@ class SessionBot(RalphMixin, BaseXMPPBot):
     # Message processing
     # -------------------------------------------------------------------------
 
-    async def _process_with_queue(self, body: str, attachments: list[Attachment] | None):
-        """Process a message and then drain any queued messages."""
-        # New user work starts a new drain window.
-        self._cancel_queue_drain = False
-        await self.process_message(body, attachments=attachments)
-
-        # If a /cancel happened while this message was in-flight, don't churn
-        # through any queued messages.
-        if self._cancel_queue_drain:
-            self._cancel_queue_drain = False
-            return
-
-        # Process any queued messages
-        while not self.message_queue.empty():
-            try:
-                if self._cancel_queue_drain:
-                    break
-                next_body, next_attachments = self.message_queue.get_nowait()
-
-                # /cancel may have fired after we dequeued but before we start.
-                if self._cancel_queue_drain:
-                    break
-
-                queue_remaining = self.message_queue.qsize()
-                if queue_remaining > 0:
-                    self.send_reply(
-                        f"Processing queued message ({queue_remaining} remaining)..."
-                    )
-                else:
-                    self.send_reply("Processing queued message...")
-                await self.process_message(next_body, attachments=next_attachments)
-
-                if self._cancel_queue_drain:
-                    break
-            except asyncio.QueueEmpty:
-                break
-
-        # Reset after drain loop ends.
-        if self._cancel_queue_drain:
-            self._cancel_queue_drain = False
-
     def _augment_prompt_with_attachments(
         self, body: str, attachments: list[Attachment] | None
     ) -> str:
@@ -620,93 +547,55 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             lines.append(f"- {a.local_path}")
         return "\n".join(lines).strip()
 
+    async def _process_one_message_now(
+        self,
+        body: str,
+        *,
+        trigger_response: bool,
+        attachments: list[Attachment] | None,
+    ) -> None:
+        """Process exactly one message (no queueing, no typing/processing flags)."""
+        session = self.sessions.get(self.session_name)
+        if not session:
+            self.send_reply("Session not found in database.")
+            return
+
+        self.sessions.update_last_active(self.session_name)
+        body_for_history = self._augment_prompt_with_attachments(body, attachments)
+        append_to_history(body_for_history, self.working_dir, session.claude_session_id)
+        log_activity(body, session=self.session_name, source="xmpp")
+        self.messages.add(self.session_name, "user", body_for_history, session.active_engine)
+
+        if not trigger_response:
+            return
+
+        handler = self.engine_handler_for(session.active_engine)
+        if not handler:
+            self.send_reply(f"Unknown engine '{session.active_engine}'.")
+            return
+
+        # ensure_future accepts any awaitable and gives us a cancellable future.
+        self._run_task = asyncio.ensure_future(handler.run(body, session, attachments))
+        try:
+            await self._run_task
+        finally:
+            self._run_task = None
+
     async def process_message(
         self,
         body: str,
         trigger_response: bool = True,
         *,
         attachments: list[Attachment] | None = None,
-    ):
-        """Send message to agent and relay response."""
-        if self.shutting_down:
-            return
-        self.processing = True
-        if trigger_response:
-            self._start_typing_loop()
-
-        try:
-            session = self.sessions.get(self.session_name)
-            if not session:
-                self.send_reply("Session not found in database.")
-                return
-
-            self.sessions.update_last_active(self.session_name)
-            body_for_history = self._augment_prompt_with_attachments(body, attachments)
-            append_to_history(body_for_history, self.working_dir, session.claude_session_id)
-            log_activity(body, session=self.session_name, source="xmpp")
-            self.messages.add(
-                self.session_name, "user", body_for_history, session.active_engine
-            )
-
-            if not trigger_response:
-                return
-
-            handler = self.engine_handler_for(session.active_engine)
-            if not handler:
-                self.send_reply(f"Unknown engine '{session.active_engine}'.")
-                return
-            # ensure_future accepts any awaitable and gives us a cancellable future.
-            self._run_task = asyncio.ensure_future(
-                handler.run(body, session, attachments)
-            )
-            await self._run_task
-
-        except asyncio.CancelledError:
-            self.log.info("Message processing cancelled")
-            return
-        except Exception as e:
-            self.log.exception("Error")
-            self.send_reply(f"Error: {e}")
-        finally:
-            self._run_task = None
-            self.processing = False
-            self._stop_typing_loop()
-
-    def _maybe_send_typing(self, *, min_interval_s: float = 5.0) -> None:
-        """Best-effort composing keepalive (rate-limited)."""
-        if self.shutting_down:
-            return
-        now = time.monotonic()
-        if now - self._typing_last_sent < min_interval_s:
-            return
-        self._typing_last_sent = now
-        self.send_typing()
-
-    async def _typing_loop(self, *, interval_s: float = 15.0) -> None:
-        """Periodically refresh composing while a run is in-flight."""
-        try:
-            while self.processing and not self.shutting_down:
-                # Many clients clear "typing" after ~10-30s unless refreshed.
-                self._maybe_send_typing(min_interval_s=0.0)
-                await asyncio.sleep(interval_s)
-        except asyncio.CancelledError:
-            return
-
-    def _start_typing_loop(self) -> None:
-        # If a prior loop is still running, keep it.
-        if self._typing_task and not self._typing_task.done():
-            self._maybe_send_typing(min_interval_s=0.0)
-            return
-
-        # Send immediately, then keepalive in the background.
-        self._maybe_send_typing(min_interval_s=0.0)
-        self._typing_task = asyncio.create_task(self._typing_loop())
-
-    def _stop_typing_loop(self) -> None:
-        task = self._typing_task
-        self._typing_task = None
-        if task and not task.done():
-            task.cancel()
+    ) -> None:
+        """Enqueue a message for serialized processing."""
+        await self._actor.enqueue(
+            body,
+            list(attachments or []),
+            trigger_response=trigger_response,
+            scheduled=False,
+            wait=True,
+        )
 
     async def run_opencode_one_shot(
         self,
@@ -832,16 +721,16 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                         meta_tool=self._infer_meta_tool_from_summary(tool_summaries[-1]),
                     )
                     # Progress messages often clear typing indicators; reassert.
-                    self._maybe_send_typing(min_interval_s=5.0)
+                    self._typing.maybe_send(min_interval_s=5.0)
             elif event_type == "result":
                 self._send_result(
                     tool_summaries, response_parts, content, session.active_engine
                 )
             elif event_type == "error":
-                self._stop_typing_loop()
+                self._typing.stop()
                 self.send_reply(f"Error: {content}")
             elif event_type == "cancelled":
-                self._stop_typing_loop()
+                self._typing.stop()
                 self.send_reply("Cancelled.")
 
     async def _run_opencode(
@@ -901,7 +790,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                             meta_tool=self._infer_meta_tool_from_summary(content),
                         )
                         # Tool/progress messages often clear typing indicators.
-                        self._maybe_send_typing(min_interval_s=5.0)
+                        self._typing.maybe_send(min_interval_s=5.0)
                     elif len(tool_summaries) - last_progress_at >= 8:
                         last_progress_at = len(tool_summaries)
                         self.send_reply(
@@ -909,7 +798,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                             meta_type="tool",
                             meta_tool=self._infer_meta_tool_from_summary(tool_summaries[-1]),
                         )
-                        self._maybe_send_typing(min_interval_s=5.0)
+                        self._typing.maybe_send(min_interval_s=5.0)
                 elif event_type == "question" and isinstance(content, Question):
                     # Question is being handled by callback, just log it
                     self.log.info(f"Question asked: {content.request_id}")
@@ -923,10 +812,10 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                     )
                 elif event_type == "error":
                     self.log.warning(f"OpenCode error event: {content}")
-                    self._stop_typing_loop()
+                    self._typing.stop()
                     self.send_reply(f"Error: {content}")
                 elif event_type == "cancelled":
-                    self._stop_typing_loop()
+                    self._typing.stop()
                     self.send_reply("Cancelled.")
 
             self.log.info(f"OpenCode run completed after {event_count} events")
@@ -1092,7 +981,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
     ):
         """Format and send final result."""
         # Ensure we don't keep sending composing after the final message.
-        self._stop_typing_loop()
+        self._typing.stop()
         parts = []
 
         show_tools = os.getenv("SWITCH_SEND_TOOL_SUMMARIES", "1").lower() not in (
