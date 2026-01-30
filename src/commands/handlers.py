@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from src.engines import normalize_engine
-from src.ralph import RalphLoop, parse_ralph_command
+from src.core.session_runtime.runtime import RalphConfig
+from src.ralph import parse_ralph_command
 
 if TYPE_CHECKING:
     from src.bots.session import SessionBot
@@ -179,42 +179,42 @@ class CommandHandler:
     @command("/ralph-cancel", "/ralph-stop")
     async def ralph_cancel(self, _body: str) -> bool:
         """Cancel Ralph loop."""
-        if self.bot.ralph_loop:
-            self.bot.ralph_loop.cancel()
+        if self.bot._runtime.request_ralph_stop():
             self.bot.send_reply("Ralph loop will stop after current iteration...")
-        else:
-            self.bot.send_reply("No Ralph loop running.")
+            return True
+
+        self.bot.send_reply("No Ralph loop running.")
         return True
 
     @command("/ralph-status")
     async def ralph_status(self, _body: str) -> bool:
         """Show Ralph loop status."""
-        if self.bot.ralph_loop:
-            rl = self.bot.ralph_loop
-            max_str = str(rl.max_iterations) if rl.max_iterations > 0 else "unlimited"
-            wait_minutes = rl.wait_seconds / 60.0
+        live = self.bot._runtime.get_ralph_status()
+        if live and live.status in {"queued", "running", "stopping"}:
+            max_str = str(live.max_iterations) if live.max_iterations > 0 else "unlimited"
+            wait_minutes = float(live.wait_seconds or 0.0) / 60.0
             self.bot.send_reply(
-                f"Ralph RUNNING\n"
-                f"Iteration: {rl.current_iteration}/{max_str}\n"
-                f"Cost so far: ${rl.total_cost:.3f}\n"
+                f"Ralph {live.status.upper()}\n"
+                f"Iteration: {live.current_iteration}/{max_str}\n"
+                f"Cost so far: ${live.total_cost:.3f}\n"
                 f"Wait: {wait_minutes:.2f} min\n"
-                f"Promise: {rl.completion_promise or 'none'}"
+                f"Promise: {live.completion_promise or 'none'}"
             )
-        else:
-            loop = self.bot.ralph_loops.get_latest(self.bot.session_name)
-            if loop:
-                max_str = (
-                    str(loop.max_iterations) if loop.max_iterations else "unlimited"
-                )
-                wait_minutes = loop.wait_seconds / 60.0
-                self.bot.send_reply(
-                    f"Last Ralph: {loop.status}\n"
-                    f"Iterations: {loop.current_iteration}/{max_str}\n"
-                    f"Wait: {wait_minutes:.2f} min\n"
-                    f"Cost: ${loop.total_cost:.3f}"
-                )
-            else:
-                self.bot.send_reply("No Ralph loops in this session.")
+            return True
+
+        loop = self.bot.ralph_loops.get_latest(self.bot.session_name)
+        if loop:
+            max_str = str(loop.max_iterations) if loop.max_iterations else "unlimited"
+            wait_minutes = loop.wait_seconds / 60.0
+            self.bot.send_reply(
+                f"Last Ralph: {loop.status}\n"
+                f"Iterations: {loop.current_iteration}/{max_str}\n"
+                f"Wait: {wait_minutes:.2f} min\n"
+                f"Cost: ${loop.total_cost:.3f}"
+            )
+            return True
+
+        self.bot.send_reply("No Ralph loops in this session.")
         return True
 
     @command("/ralph", exact=False)
@@ -234,21 +234,17 @@ class CommandHandler:
             )
             return True
 
-        if self.bot.processing:
-            self.bot.send_reply("Already running. Use /ralph-cancel first.")
+        if self.bot.processing or self.bot._runtime.pending_count() > 0:
+            self.bot.send_reply("Already running or queued. Use /ralph-cancel (or /cancel) first.")
             return True
 
-        self.bot.ralph_loop = RalphLoop(
-            self.bot,
-            ralph_args["prompt"],
-            self.bot.working_dir,
-            self.bot.output_dir,
-            max_iterations=ralph_args["max_iterations"],
-            completion_promise=ralph_args["completion_promise"],
-            wait_minutes=ralph_args["wait_minutes"],
-            sessions=self.bot.sessions,
-            ralph_loops=self.bot.ralph_loops,
+        await self.bot._runtime.start_ralph(
+            RalphConfig(
+                prompt=ralph_args["prompt"],
+                max_iterations=int(ralph_args["max_iterations"] or 0),
+                completion_promise=ralph_args["completion_promise"],
+                wait_seconds=float(ralph_args["wait_minutes"] or 0.0) * 60.0,
+                force_engine="claude",
+            )
         )
-        self.bot.processing = True
-        asyncio.ensure_future(cast(Awaitable[Any], self.bot.run_ralph()))
         return True

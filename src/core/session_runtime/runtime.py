@@ -25,6 +25,7 @@ from src.core.session_runtime.ports import (
     AttachmentPromptPort,
     HistoryPort,
     MessageStorePort,
+    RalphLoopStorePort,
     ReplyPort,
     RunnerFactoryPort,
     SessionState,
@@ -34,12 +35,35 @@ from src.core.session_runtime.ports import (
 
 
 @dataclass(frozen=True)
+class RalphConfig:
+    prompt: str
+    max_iterations: int = 0
+    completion_promise: str | None = None
+    wait_seconds: float = 2.0
+    force_engine: str = "claude"
+
+
+@dataclass
+class RalphStatus:
+    status: str  # queued|running|stopping|completed|cancelled|error|max_iterations|finished
+    current_iteration: int = 0
+    max_iterations: int = 0
+    wait_seconds: float = 0.0
+    completion_promise: str | None = None
+    total_cost: float = 0.0
+    loop_id: int | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class _WorkItem:
     generation: int
+    kind: str  # "message" | "ralph"
     body: str
     attachments: list[Attachment] | None
     trigger_response: bool
     scheduled: bool
+    ralph: RalphConfig | None = None
     done: asyncio.Future[None] | None = None
     enqueued_at: float = field(default_factory=time.monotonic)
 
@@ -58,6 +82,7 @@ class SessionRuntime:
         runner_factory: RunnerFactoryPort,
         history: HistoryPort,
         prompt: AttachmentPromptPort,
+        ralph_loops: RalphLoopStorePort | None = None,
         infer_meta_tool_from_summary: Callable[[str], str | None],
         on_processing_changed: Callable[[bool], None] | None = None,
     ):
@@ -71,6 +96,7 @@ class SessionRuntime:
         self._runner_factory = runner_factory
         self._history = history
         self._prompt = prompt
+        self._ralph_loops = ralph_loops
         self._infer_meta_tool_from_summary = infer_meta_tool_from_summary
         self._on_processing_changed = on_processing_changed
 
@@ -85,6 +111,10 @@ class SessionRuntime:
         self._run_task: asyncio.Task | None = None
 
         self._pending_question_answers: dict[str, asyncio.Future] = {}
+
+        self._ralph_status: RalphStatus | None = None
+        self._ralph_stop_requested = False
+        self._ralph_wake = asyncio.Event()
 
     def ensure_running(self) -> None:
         if self.shutting_down:
@@ -114,6 +144,7 @@ class SessionRuntime:
 
         item = _WorkItem(
             generation=self._generation,
+            kind="message",
             body=body,
             attachments=list(attachments) if attachments else None,
             trigger_response=trigger_response,
@@ -151,6 +182,11 @@ class SessionRuntime:
             cancelled_any = True
             self.runner.cancel()
 
+        if self._ralph_status and self._ralph_status.status in {"queued", "running", "stopping"}:
+            cancelled_any = True
+            self._ralph_stop_requested = True
+            self._ralph_wake.set()
+
         if self._run_task and not self._run_task.done():
             cancelled_any = True
             self._run_task.cancel()
@@ -164,6 +200,57 @@ class SessionRuntime:
             self._reply.send_reply("Cancelling current work...")
 
         return cancelled_any
+
+    def get_ralph_status(self) -> RalphStatus | None:
+        return self._ralph_status
+
+    def request_ralph_stop(self) -> bool:
+        """Ask Ralph to stop after the current iteration."""
+        if not self._ralph_status or self._ralph_status.status not in {"queued", "running"}:
+            return False
+        self._ralph_stop_requested = True
+        self._ralph_status.status = "stopping"
+        self._ralph_wake.set()
+        return True
+
+    async def start_ralph(self, cfg: RalphConfig, *, wait: bool = False) -> None:
+        """Enqueue a Ralph loop.
+
+        Ralph runs as a single queued work item so it shares cancellation and
+        serialization behavior with normal messages.
+        """
+        if self.shutting_down:
+            return
+
+        done: asyncio.Future[None] | None = None
+        if wait:
+            done = asyncio.get_running_loop().create_future()
+
+        self._ralph_stop_requested = False
+        self._ralph_wake = asyncio.Event()
+        self._ralph_status = RalphStatus(
+            status="queued",
+            current_iteration=0,
+            max_iterations=max(0, int(cfg.max_iterations or 0)),
+            wait_seconds=float(cfg.wait_seconds or 0.0),
+            completion_promise=(cfg.completion_promise or None),
+            total_cost=0.0,
+        )
+
+        item = _WorkItem(
+            generation=self._generation,
+            kind="ralph",
+            body=cfg.prompt,
+            attachments=None,
+            trigger_response=True,
+            scheduled=False,
+            ralph=cfg,
+            done=done,
+        )
+        await self._queue.put(item)
+        self.ensure_running()
+        if done is not None:
+            await done
 
     def shutdown(self) -> None:
         if self.shutting_down:
@@ -224,6 +311,11 @@ class SessionRuntime:
             return
 
     async def _process_one(self, item: _WorkItem) -> None:
+        if item.kind == "ralph":
+            cfg = item.ralph or RalphConfig(prompt=item.body)
+            await self._run_ralph(cfg)
+            return
+
         session = self._sessions.get(self.session_name)
         if not session:
             self._reply.send_reply("Session not found in database.")
@@ -247,6 +339,185 @@ class SessionRuntime:
             await self._run_task
         finally:
             self._run_task = None
+
+    def _ralph_save(self, status: str) -> None:
+        if not self._ralph_loops or not self._ralph_status or not self._ralph_status.loop_id:
+            return
+        self._ralph_loops.update_progress(
+            self._ralph_status.loop_id,
+            self._ralph_status.current_iteration,
+            self._ralph_status.total_cost,
+            status=status,
+        )
+
+    async def _run_ralph(self, cfg: RalphConfig) -> None:
+        if not self._ralph_status:
+            self._ralph_status = RalphStatus(status="running")
+        self._ralph_status.status = "running"
+
+        session = self._sessions.get(self.session_name)
+        if not session:
+            self._reply.send_reply("Session not found in database.")
+            self._ralph_status.status = "error"
+            self._ralph_status.error = "Session not found"
+            return
+
+        # Persist loop record.
+        if self._ralph_loops:
+            try:
+                loop_id = self._ralph_loops.create(
+                    self.session_name,
+                    cfg.prompt,
+                    int(cfg.max_iterations or 0),
+                    cfg.completion_promise,
+                    float(cfg.wait_seconds or 0.0),
+                )
+                self._ralph_status.loop_id = loop_id
+            except Exception:
+                pass
+
+        promise_str = f'"{cfg.completion_promise}"' if cfg.completion_promise else "none"
+        wait_minutes = float(cfg.wait_seconds or 0.0) / 60.0
+        max_str = str(cfg.max_iterations) if (cfg.max_iterations or 0) > 0 else "unlimited"
+        self._reply.send_reply(
+            "Ralph loop started\n"
+            f"Max: {max_str} | Wait: {wait_minutes:.2f} min | Done when: {promise_str}\n"
+            "Use /ralph-cancel to stop after current iteration (or /cancel to abort immediately)"
+        )
+
+        try:
+            while True:
+                if self.shutting_down:
+                    self._ralph_status.status = "cancelled"
+                    self._ralph_save("cancelled")
+                    return
+
+                if self._ralph_stop_requested:
+                    self._ralph_status.status = "cancelled"
+                    self._reply.send_reply(
+                        f"Ralph cancelled at iteration {self._ralph_status.current_iteration}\n"
+                        f"Total cost: ${self._ralph_status.total_cost:.3f}"
+                    )
+                    self._ralph_save("cancelled")
+                    return
+
+                if cfg.max_iterations and cfg.max_iterations > 0:
+                    if self._ralph_status.current_iteration >= cfg.max_iterations:
+                        self._ralph_status.status = "max_iterations"
+                        self._reply.send_reply(
+                            f"Ralph complete: hit max ({cfg.max_iterations})\n"
+                            f"Total cost: ${self._ralph_status.total_cost:.3f}"
+                        )
+                        self._ralph_save("max_iterations")
+                        return
+
+                self._ralph_status.current_iteration += 1
+                self._ralph_save("running")
+
+                result = await self._run_ralph_iteration(cfg, session)
+                if result.error:
+                    self._ralph_status.status = "error"
+                    self._ralph_status.error = result.error
+                    self._reply.send_reply(
+                        f"Ralph error at iteration {self._ralph_status.current_iteration}: {result.error}\n"
+                        f"Stopping. Total cost: ${self._ralph_status.total_cost:.3f}"
+                    )
+                    self._ralph_save("error")
+                    return
+
+                self._ralph_status.total_cost += float(result.cost)
+                preview = result.text[:200] + ("..." if len(result.text) > 200 else "")
+                iter_str = (
+                    f"{self._ralph_status.current_iteration}/{cfg.max_iterations}"
+                    if cfg.max_iterations and cfg.max_iterations > 0
+                    else str(self._ralph_status.current_iteration)
+                )
+                self._reply.send_reply(
+                    f"[Ralph {iter_str} | {result.tool_count}tools ${result.cost:.3f}]\n\n{preview}"
+                )
+
+                if cfg.completion_promise and f"<promise>{cfg.completion_promise}</promise>" in result.text:
+                    self._ralph_status.status = "completed"
+                    self._reply.send_reply(
+                        f"Ralph COMPLETE at iteration {self._ralph_status.current_iteration}\n"
+                        f"Detected: <promise>{cfg.completion_promise}</promise>\n"
+                        f"Total cost: ${self._ralph_status.total_cost:.3f}"
+                    )
+                    self._ralph_save("completed")
+                    return
+
+                self._ralph_save("running")
+                if cfg.wait_seconds and cfg.wait_seconds > 0:
+                    try:
+                        await asyncio.wait_for(self._ralph_wake.wait(), timeout=cfg.wait_seconds)
+                    except asyncio.TimeoutError:
+                        pass
+                    finally:
+                        self._ralph_wake.clear()
+        finally:
+            if self._ralph_status and self._ralph_status.status == "running":
+                self._ralph_status.status = "finished"
+                self._ralph_save("finished")
+
+    @dataclass
+    class _RalphIterationResult:
+        text: str = ""
+        cost: float = 0.0
+        tool_count: int = 0
+        error: str | None = None
+
+    def _build_ralph_prompt(self, cfg: RalphConfig, iteration: int) -> str:
+        iter_info = f"[Ralph iteration {iteration}"
+        if cfg.max_iterations and cfg.max_iterations > 0:
+            iter_info += f"/{cfg.max_iterations}"
+        iter_info += "]"
+
+        prompt = f"{iter_info}\n\n{cfg.prompt}"
+        if cfg.completion_promise:
+            prompt += (
+                f"\n\nTo signal completion, output EXACTLY: "
+                f"<promise>{cfg.completion_promise}</promise>\n"
+                "ONLY output this when the task is genuinely complete."
+            )
+        return prompt
+
+    async def _run_ralph_iteration(self, cfg: RalphConfig, session: SessionState) -> "SessionRuntime._RalphIterationResult":
+        result = SessionRuntime._RalphIterationResult()
+        engine = (cfg.force_engine or "claude").strip().lower()
+        if engine != "claude":
+            engine = "claude"
+
+        self.runner = self._runner_factory.create(
+            engine,
+            working_dir=self.working_dir,
+            output_dir=self.output_dir,
+            session_name=self.session_name,
+        )
+
+        prompt = self._build_ralph_prompt(cfg, self._ralph_status.current_iteration if self._ralph_status else 1)
+        try:
+            async for event_type, content in self.runner.run(prompt, session.claude_session_id):
+                if event_type == "session_id" and isinstance(content, str) and content:
+                    self._sessions.update_claude_session_id(self.session_name, content)
+                elif event_type == "text" and isinstance(content, str):
+                    result.text = content
+                elif event_type == "tool":
+                    result.tool_count += 1
+                elif event_type == "result" and isinstance(content, dict):
+                    cost = content.get("cost_usd")
+                    if isinstance(cost, (int, float)):
+                        result.cost = float(cost)
+                elif event_type == "error":
+                    result.error = str(content)
+                elif event_type == "cancelled":
+                    result.error = "cancelled"
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            result.error = f"{type(e).__name__}: {e}"
+        finally:
+            self.runner = None
+        return result
 
     async def _run_engine(self, *, engine: str, session: SessionState, prompt: str) -> None:
         if engine == "claude":

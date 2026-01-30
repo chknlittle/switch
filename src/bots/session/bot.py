@@ -9,12 +9,12 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from src.bots.ralph_mixin import RalphMixin
 from src.core.session_runtime import SessionRuntime
 from src.core.session_runtime.ports import (
     AttachmentPromptPort,
     HistoryPort,
     MessageStorePort,
+    RalphLoopStorePort,
     ReplyPort,
     RunnerFactoryPort,
     SessionState,
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
     from src.db import Session
     from src.manager import SessionManager
-class SessionBot(RalphMixin, BaseXMPPBot):
+class SessionBot(BaseXMPPBot):
     """XMPP bot for a single session."""
 
     def __init__(
@@ -67,6 +67,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self.db = db
         self.sessions = SessionRepository(db)
         self.messages = MessageRepository(db)
+        self.ralph_loops = RalphLoopRepository(db)
         self.working_dir = working_dir
         self.output_dir = output_dir
         self.xmpp_recipient = xmpp_recipient
@@ -85,7 +86,6 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         self._runtime = self._build_runtime()
         self.attachment_store = AttachmentStore()
-        self.init_ralph(RalphLoopRepository(self.db))
         self.commands = CommandHandler(self)
 
         self.add_event_handler("session_start", self.on_start)
@@ -185,6 +185,35 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 lines.append(f"- {a.local_path}")
             return "\n".join(lines).strip()
 
+    class _RalphLoopsAdapter(RalphLoopStorePort):
+        def __init__(self, repo: RalphLoopRepository):
+            self._repo = repo
+
+        def create(
+            self,
+            session_name: str,
+            prompt: str,
+            max_iterations: int,
+            completion_promise: str | None,
+            wait_seconds: float,
+        ) -> int:
+            return self._repo.create(
+                session_name,
+                prompt,
+                max_iterations=max_iterations,
+                completion_promise=completion_promise,
+                wait_seconds=float(wait_seconds or 0.0),
+            )
+
+        def update_progress(
+            self,
+            loop_id: int,
+            current_iteration: int,
+            total_cost: float,
+            status: str = "running",
+        ) -> None:
+            self._repo.update_progress(loop_id, current_iteration, total_cost, status)
+
     def _build_runtime(self) -> SessionRuntime:
         return SessionRuntime(
             session_name=self.session_name,
@@ -197,6 +226,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             runner_factory=self._RunnerFactoryAdapter(),
             history=self._HistoryAdapter(),
             prompt=self._PromptAdapter(),
+            ralph_loops=self._RalphLoopsAdapter(self.ralph_loops),
             infer_meta_tool_from_summary=self._infer_meta_tool_from_summary,
             on_processing_changed=lambda active: setattr(self, "processing", active),
         )
@@ -310,10 +340,6 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         if self._runtime.cancel_operations(notify=notify):
             cancelled_any = True
-
-        if self.ralph_loop:
-            cancelled_any = True
-            self.ralph_loop.cancel()
 
         # Best-effort: also cancel any ad-hoc runner paths.
         if self.runner and self.processing:

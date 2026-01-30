@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Protocol
+from typing import Protocol
 
-from src.runners import Question, Runner, RunnerEvent
+from src.runners import Runner, RunnerEvent
 from src.runners.opencode.config import OpenCodeConfig
 from src.attachments import Attachment
 
@@ -84,3 +84,22 @@ class RunnerEventSinkPort(Protocol):
 
 class AttachmentPromptPort(Protocol):
     def augment_prompt(self, body: str, attachments: list[Attachment] | None) -> str: ...
+
+
+class RalphLoopStorePort(Protocol):
+    def create(
+        self,
+        session_name: str,
+        prompt: str,
+        max_iterations: int,
+        completion_promise: str | None,
+        wait_seconds: float,
+    ) -> int: ...
+
+    def update_progress(
+        self,
+        loop_id: int,
+        current_iteration: int,
+        total_cost: float,
+        status: str = "running",
+    ) -> None: ...
