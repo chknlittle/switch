@@ -25,8 +25,8 @@ import os
 from pathlib import Path
 
 from src.attachments import AttachmentStore
-from src.attachments_config import get_attachments_config
-from src.attachments_server import start_attachments_server
+from src.attachments.config import get_attachments_config
+from src.attachments.server import start_attachments_server
 from src.db import init_db
 from src.helpers import create_xmpp_account
 from src.manager import SessionManager

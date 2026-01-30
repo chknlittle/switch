@@ -17,7 +17,7 @@ class AttachmentsConfig:
 
 def _default_base_dir() -> Path:
     # Default to a stable path inside the switch repo so all agents can access it.
-    default = Path(__file__).resolve().parent.parent / "uploads"
+    default = Path(__file__).resolve().parents[2] / "uploads"
     return Path(os.getenv("SWITCH_ATTACHMENTS_DIR", str(default)))
 
 

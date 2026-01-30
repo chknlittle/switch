@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from src.attachments_config import AttachmentsConfig, get_attachments_config
+from .config import AttachmentsConfig, get_attachments_config
 
 
 @dataclass(frozen=True)
