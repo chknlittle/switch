@@ -11,7 +11,7 @@ Send these to the dispatcher bot (`cc@`, `oc@`, or `oc-gpt@`):
 | `<message>` | Create new session (backend depends on which dispatcher you message) |
 | `/list` | Show all sessions |
 | `/recent` | Show 10 most recent sessions with status |
-| `/kill <name>` | End a session and delete XMPP account |
+| `/kill <name>` | End a session (goodbye + unregister XMPP account + stop reconnect + mark closed) |
 | `/help` | Show help message |
 
 ## Session Commands
@@ -34,7 +34,7 @@ Send these to a session contact (`session-name@domain`):
 |---------|-------------|
 | `/cancel` | Abort current AI run |
 | `/peek [N]` | Show last N lines of output (default: 30, min: 100) |
-| `/kill` | End this session |
+| `/kill` | End this session (goodbye + unregister XMPP account + stop reconnect + mark closed) |
 
 ### Shell Commands
 

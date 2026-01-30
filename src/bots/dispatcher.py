@@ -8,13 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine
 
 from src.db import SessionRepository
-from src.engines import opencode_model_for_agent
-from src.helpers import (
-    add_roster_subscription,
-    create_tmux_session,
-    register_unique_account,
-    slugify,
-)
+from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.runners.opencode import OpenCodeRunner
 from src.utils import BaseXMPPBot
 
@@ -268,59 +262,21 @@ class DispatcherBot(BaseXMPPBot):
         self.send_typing()
         message = first_message.strip()
 
-        account = register_unique_account(
-            slugify(message or first_message),
-            self.db,
-            self.ejabberd_ctl,
-            self.xmpp_domain,
-            self.log,
-        )
-        if not account:
-            self.send_reply(f"Failed to create session", recipient=self.xmpp_recipient)
-            return
-
-        name, password, jid = account
-        self.send_reply(
-            f"Creating: {name} ({self.label})...", recipient=self.xmpp_recipient
-        )
-
-        recipient_user = self.xmpp_recipient.split("@")[0]
-        add_roster_subscription(
-            name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain
-        )
-        add_roster_subscription(
-            recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain
-        )
-        create_tmux_session(name, self.working_dir)
-
-        model_id = opencode_model_for_agent(self.opencode_agent)
-        self.sessions.create(
-            name=name,
-            xmpp_jid=jid,
-            xmpp_password=password,
-            tmux_name=name,
-            model_id=model_id,
-            opencode_agent=self.opencode_agent or "bridge",
-            active_engine=self.engine,
-        )
-
         if not self.manager:
-            self.send_reply(
-                "Session manager unavailable.", recipient=self.xmpp_recipient
-            )
+            self.send_reply("Session manager unavailable.", recipient=self.xmpp_recipient)
             return
 
-        bot = await self.manager.start_session_bot(name, jid, password)
-        if bot:
-            await bot.wait_connected(timeout=5)
-            bot.send_reply(
-                f"Session '{name}' ({self.label}). Processing: {message[:50]}..."
-            )
-            await bot.process_message(message or first_message)
-
-            # Let directory clients refresh the Individuals column.
-            self.manager.notify_directory_sessions_changed(dispatcher_jid=str(self.boundjid.bare))
-        else:
-            self.send_reply(
-                f"Failed to start bot for {name}", recipient=self.xmpp_recipient
-            )
+        created_name = await lifecycle_create_session(
+            self.manager,
+            message or first_message,
+            engine=self.engine,
+            opencode_agent=self.opencode_agent,
+            label=self.label,
+            on_reserved=lambda n: self.send_reply(
+                f"Creating: {n} ({self.label})...", recipient=self.xmpp_recipient
+            ),
+            dispatcher_jid=str(self.boundjid.bare),
+        )
+        if not created_name:
+            self.send_reply("Failed to create session", recipient=self.xmpp_recipient)
+            return

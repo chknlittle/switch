@@ -8,12 +8,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, Callable
 
-from src.helpers import delete_xmpp_account, kill_tmux_session
+from src.engines import opencode_model_for_agent
+from src.helpers import (
+    add_roster_subscription,
+    create_tmux_session,
+    delete_xmpp_account,
+    kill_tmux_session,
+    register_unique_account,
+    slugify,
+)
 from src.utils import BaseXMPPBot
 
 if TYPE_CHECKING:
+    import sqlite3
+
     from src.bots.session import SessionBot
     from src.db import SessionRepository
 
@@ -29,6 +40,119 @@ class _SessionKillManager(Protocol):
     ejabberd_ctl: str
 
     def notify_directory_sessions_changed(self, dispatcher_jid: str | None = None) -> None: ...
+
+
+class _SessionCreateManager(Protocol):
+    db: "sqlite3.Connection"
+    sessions: "SessionRepository"
+    working_dir: str
+    output_dir: Path
+    xmpp_server: str
+    xmpp_domain: str
+    xmpp_recipient: str
+    ejabberd_ctl: str
+
+    async def start_session_bot(self, name: str, jid: str, password: str) -> "SessionBot": ...
+
+    def notify_directory_sessions_changed(self, dispatcher_jid: str | None = None) -> None: ...
+
+
+async def create_session(
+    manager: _SessionCreateManager,
+    first_message: str,
+    *,
+    engine: str = "opencode",
+    opencode_agent: str | None = "bridge",
+    model_id: str | None = None,
+    label: str | None = None,
+    name_hint: str | None = None,
+    announce: str | None = None,
+    announce_vars: dict[str, str] | None = None,
+    on_reserved: Callable[[str], None] | None = None,
+    dispatcher_jid: str | None = None,
+) -> str | None:
+    """Create a session and start its bot.
+
+    This centralizes the "register + roster + tmux + DB row + start bot" flow.
+    Returns the new session name on success.
+    """
+
+    message = (first_message or "").strip()
+    if not message:
+        message = first_message
+
+    base_name = (name_hint or slugify(message)).strip()
+
+    account = register_unique_account(
+        base_name,
+        manager.db,
+        manager.ejabberd_ctl,
+        manager.xmpp_domain,
+        _log,
+    )
+    if not account:
+        return None
+
+    name, password, jid = account
+
+    if on_reserved:
+        try:
+            on_reserved(name)
+        except Exception:
+            # Purely informational.
+            pass
+
+    recipient_user = manager.xmpp_recipient.split("@")[0]
+    add_roster_subscription(
+        name, manager.xmpp_recipient, "Clients", manager.ejabberd_ctl, manager.xmpp_domain
+    )
+    add_roster_subscription(
+        recipient_user, jid, "Sessions", manager.ejabberd_ctl, manager.xmpp_domain
+    )
+    create_tmux_session(name, manager.working_dir)
+
+    effective_model = model_id or opencode_model_for_agent(opencode_agent)
+    manager.sessions.create(
+        name=name,
+        xmpp_jid=jid,
+        xmpp_password=password,
+        tmux_name=name,
+        model_id=effective_model,
+        opencode_agent=opencode_agent or "bridge",
+        active_engine=engine,
+    )
+
+    bot = await manager.start_session_bot(name, jid, password)
+    await bot.wait_connected(timeout=5)
+
+    preview = (message or "").strip()[:50]
+    if announce is None:
+        label_str = f" ({label})" if label else ""
+        announce = (
+            f"Session '{name}'{label_str}. Processing: {preview}..."
+            if preview
+            else f"Session '{name}'{label_str}."
+        )
+    else:
+        fmt_vars: dict[str, str] = {
+            "name": name,
+            "label": label or "",
+            "preview": preview,
+        }
+        if announce_vars:
+            fmt_vars.update({str(k): str(v) for k, v in announce_vars.items() if k})
+        try:
+            announce = announce.format(**fmt_vars)
+        except Exception:
+            pass
+
+    bot.send_reply(announce)
+
+    if message:
+        await bot.process_message(message)
+
+    manager.notify_directory_sessions_changed(dispatcher_jid=dispatcher_jid)
+    return name
 
 
 async def kill_session(

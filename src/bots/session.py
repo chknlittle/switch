@@ -16,12 +16,10 @@ from src.bots.ralph_mixin import RalphMixin
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
 from src.engines import get_engine_spec
+from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.helpers import (
-    add_roster_subscription,
     append_to_history,
-    create_tmux_session,
     log_activity,
-    register_unique_account,
 )
 from src.runners import ClaudeRunner, OpenCodeResult, OpenCodeRunner, Question
 from src.attachments import Attachment, AttachmentStore
@@ -1203,37 +1201,23 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         self.send_reply("Spawning sibling session...")
 
-        account = register_unique_account(
-            f"{self.session_name}-sib",
-            self.db,
-            self.ejabberd_ctl,
-            self.xmpp_domain,
-            self.log,
+        parent = self.sessions.get(self.session_name)
+        engine = parent.active_engine if parent else "opencode"
+        agent = parent.opencode_agent if parent else "bridge"
+        model_id = parent.model_id if parent else None
+
+        created_name = await lifecycle_create_session(
+            self.manager,
+            first_message,
+            engine=engine,
+            opencode_agent=agent,
+            model_id=model_id,
+            label=None,
+            name_hint=f"{self.session_name}-sib",
+            announce="Sibling session '{name}' (spawned from {parent}). Processing: {preview}...",
+            announce_vars={"parent": self.session_name},
+            dispatcher_jid=None,
         )
-        if not account:
+        if not created_name:
             self.send_reply("Failed to create sibling session")
             return
-
-        name, password, jid = account
-        recipient_user = self.xmpp_recipient.split("@")[0]
-        add_roster_subscription(
-            name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain
-        )
-        add_roster_subscription(
-            recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain
-        )
-        create_tmux_session(name, self.working_dir)
-
-        self.sessions.create(
-            name=name, xmpp_jid=jid, xmpp_password=password, tmux_name=name
-        )
-
-        bot = await self.manager.start_session_bot(name, jid, password)
-        if bot:
-            await bot.wait_connected(timeout=5)
-            bot.send_reply(
-                f"Sibling session '{name}' (spawned from {self.session_name})"
-            )
-            await bot.process_message(first_message)
-        else:
-            self.send_reply("Failed to start sibling session")

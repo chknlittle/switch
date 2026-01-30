@@ -104,6 +104,15 @@ Coordinates all bots:
 - Restores active sessions on restart
 - Manages XMPP account lifecycle
 
+### Lifecycle (Source of Truth)
+
+Session create/kill semantics are centralized in:
+
+- `src/lifecycle/sessions.py`
+
+Dispatcher bots, session bots, and shell scripts should delegate to this module
+to avoid drift.
+
 ## Data Flow
 
 1. **New Session**: Message to orchestrator (cc/oc/oc-gpt) → slugify name → create XMPP account → spawn SessionBot with engine config → process first message

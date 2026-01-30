@@ -10,13 +10,9 @@ from pathlib import Path
 
 from src.bots import DirectoryBot, DispatcherBot, SessionBot
 from src.db import SessionRepository
-from src.helpers import (
-    add_roster_subscription,
-    create_tmux_session,
-    register_unique_account,
-    slugify,
-)
+from src.helpers import create_tmux_session
 from src.lifecycle.sessions import kill_session as lifecycle_kill_session
+from src.lifecycle.sessions import create_session as lifecycle_create_session
 
 log = logging.getLogger("manager")
 
@@ -94,32 +90,17 @@ class SessionManager:
 
     async def create_session(self, message: str):
         """Create a new session from dispatcher message."""
-        account = register_unique_account(
-            slugify(message), self.db, self.ejabberd_ctl, self.xmpp_domain, log
+        created = await lifecycle_create_session(
+            self,
+            message,
+            engine="opencode",
+            opencode_agent="bridge",
+            label="OpenCode",
+            dispatcher_jid=None,
         )
-        if not account:
-            log.error(f"Failed to create session")
+        if not created:
+            log.error("Failed to create session")
             return
-
-        name, password, jid = account
-        recipient_user = self.xmpp_recipient.split("@")[0]
-        add_roster_subscription(
-            name, self.xmpp_recipient, "Clients", self.ejabberd_ctl, self.xmpp_domain
-        )
-        add_roster_subscription(
-            recipient_user, jid, "Sessions", self.ejabberd_ctl, self.xmpp_domain
-        )
-        create_tmux_session(name, self.working_dir)
-
-        self.sessions.create(
-            name=name, xmpp_jid=jid, xmpp_password=password, tmux_name=name
-        )
-
-        bot = await self.start_session_bot(name, jid, password)
-        await bot.wait_connected(timeout=5)
-
-        bot.send_reply(f"Session '{name}' created.")
-        await bot.process_message(message)
 
     async def kill_session(self, name: str) -> bool:
         """Kill a session and cleanup."""
