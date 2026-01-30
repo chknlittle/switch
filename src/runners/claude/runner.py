@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from src.runners.base import BaseRunner, RunState
-from src.runners.claude_processor import ClaudeEventProcessor
+from src.runners.claude.processor import ClaudeEventProcessor
 from src.runners.pipeline import JSONLineStats, iter_json_line_pipeline
 from src.runners.subprocess_transport import SubprocessTransport
 
