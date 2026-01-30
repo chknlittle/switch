@@ -1,6 +1,6 @@
 # Switch
 
-Multi-contact OpenCode for developers.
+Multi-contact [OpenClaw](https://openclaw.ai/) for developers.
 
 > **Note:** This project is vibe coded and heavily WIP. Expect rough edges, breaking changes, and incomplete features.
 
