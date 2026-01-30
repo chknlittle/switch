@@ -22,7 +22,7 @@ from src.helpers import (
     append_to_history,
     log_activity,
 )
-from src.runners import ClaudeRunner, OpenCodeResult, OpenCodeRunner, Question
+from src.runners import ClaudeRunner, OpenCodeRunner, Question
 from src.attachments import Attachment, AttachmentStore
 from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
 
@@ -903,30 +903,13 @@ class SessionBot(RalphMixin, BaseXMPPBot):
                 elif event_type == "question" and isinstance(content, Question):
                     # Question is being handled by callback, just log it
                     self.log.info(f"Question asked: {content.request_id}")
-                elif event_type == "result" and isinstance(content, OpenCodeResult):
-                    if not response_parts and content.text:
-                        response_parts.append(content.text)
-                    model_short = (
-                        session.model_id.split("/")[-1] if session.model_id else "?"
-                    )
-                    stats = {
-                        "engine": "opencode",
-                        "model": model_short,
-                        "tokens_in": content.tokens_in,
-                        "tokens_out": content.tokens_out,
-                        "tokens_reasoning": content.tokens_reasoning,
-                        "tokens_cache_read": content.tokens_cache_read,
-                        "tokens_cache_write": content.tokens_cache_write,
-                        "cost_usd": f"{content.cost:.3f}",
-                        "duration_s": f"{content.duration_s:.1f}",
-                        "summary": (
-                            f"[{model_short} {content.tokens_in}/{content.tokens_out} tok"
-                            f" r{content.tokens_reasoning} c{content.tokens_cache_read}/{content.tokens_cache_write}"
-                            f" ${content.cost:.3f} {content.duration_s:.1f}s]"
-                        ),
-                    }
+                elif event_type == "result" and isinstance(content, dict):
+                    if not response_parts:
+                        text = content.get("text")
+                        if isinstance(text, str) and text:
+                            response_parts.append(text)
                     self._send_result(
-                        tool_summaries, response_parts, stats, session.active_engine
+                        tool_summaries, response_parts, content, session.active_engine
                     )
                 elif event_type == "error":
                     self.log.warning(f"OpenCode error event: {content}")

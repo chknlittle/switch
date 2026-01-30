@@ -14,7 +14,6 @@ import aiohttp
 from src.attachments import Attachment
 from src.runners.base import RunState
 from src.runners.opencode.client import OpenCodeClient
-from src.runners.opencode.models import OpenCodeResult
 from src.runners.opencode.processor import OpenCodeEventProcessor
 
 
@@ -97,7 +96,7 @@ class OpenCodeTransport:
         state: RunState,
         message_task: asyncio.Task,
         processor: OpenCodeEventProcessor,
-    ) -> OpenCodeResult:
+    ) -> dict:
         response = await message_task
         if isinstance(response, dict):
             processor.process_message_response(response, state)

@@ -50,6 +50,7 @@ class OpenCodeRunner(BaseRunner):
         self._processor = OpenCodeEventProcessor(
             log_to_file=self._log_to_file,
             log_response=self._log_response,
+            model=model,
         )
         self._transport = OpenCodeTransport(self._client)
 
@@ -106,7 +107,7 @@ class OpenCodeRunner(BaseRunner):
             ("text", str) - Incremental response text
             ("tool", str) - Tool invocation description
             ("question", Question) - Question from AI needing answer
-            ("result", OpenCodeResult) - Final result with stats
+            ("result", dict) - Final result stats payload
             ("error", str) - Error message
         """
         state = RunState()

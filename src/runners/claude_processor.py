@@ -153,6 +153,7 @@ class ClaudeEventProcessor:
             "context_window": context_window,
             "cost_usd": float(cost),
             "duration_s": float(duration),
+            "text": state.text,
             "summary": summary,
         }
 

@@ -14,7 +14,7 @@ from typing import Callable
 
 from src.runners.base import RunState
 from src.runners.opencode.events import coerce_event
-from src.runners.opencode.models import Event, OpenCodeResult, Question
+from src.runners.opencode.models import Event, Question
 from src.runners.tool_logging import (
     format_tool_input_preview,
     should_log_tool_input,
@@ -28,9 +28,11 @@ class OpenCodeEventProcessor:
         *,
         log_to_file: Callable[[str], None],
         log_response: Callable[[str], None] | None = None,
+        model: str | None = None,
     ):
         self._log_to_file = log_to_file
         self._log_response = log_response
+        self._model = model
 
     def _handle_step_start(self, event: dict, state: RunState) -> Event | None:
         session_id = event.get("sessionID")
@@ -151,21 +153,33 @@ class OpenCodeEventProcessor:
         self._log_to_file(f"\n[QUESTION] {request_id}: {questions}\n")
         return ("question", question)
 
-    def make_result(self, state: RunState) -> OpenCodeResult:
+    def make_result(self, state: RunState) -> dict:
         if self._log_response and state.text:
             self._log_response(state.text)
-        return OpenCodeResult(
-            text=state.text,
-            session_id=state.session_id,
-            cost=state.cost,
-            tokens_in=state.tokens_in,
-            tokens_out=state.tokens_out,
-            tokens_reasoning=state.tokens_reasoning,
-            tokens_cache_read=state.tokens_cache_read,
-            tokens_cache_write=state.tokens_cache_write,
-            duration_s=state.duration_s,
-            tool_count=state.tool_count,
-        )
+
+        model_short = "?"
+        if self._model:
+            model_short = self._model.split("/", 1)[-1] or "?"
+
+        return {
+            "engine": "opencode",
+            "model": model_short,
+            "session_id": state.session_id,
+            "tool_count": state.tool_count,
+            "tokens_in": state.tokens_in,
+            "tokens_out": state.tokens_out,
+            "tokens_reasoning": state.tokens_reasoning,
+            "tokens_cache_read": state.tokens_cache_read,
+            "tokens_cache_write": state.tokens_cache_write,
+            "cost_usd": float(state.cost),
+            "duration_s": float(state.duration_s),
+            "text": state.text,
+            "summary": (
+                f"[{model_short} {state.tokens_in}/{state.tokens_out} tok"
+                f" r{state.tokens_reasoning} c{state.tokens_cache_read}/{state.tokens_cache_write}"
+                f" ${state.cost:.3f} {state.duration_s:.1f}s]"
+            ),
+        }
 
     def process_message_response(self, response: dict, state: RunState) -> None:
         info: dict = {}

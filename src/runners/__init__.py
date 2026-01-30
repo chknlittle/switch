@@ -1,6 +1,6 @@
 """CLI runners for code agents."""
 
 from src.runners.claude import ClaudeRunner
-from src.runners.opencode import OpenCodeResult, OpenCodeRunner, Question
+from src.runners.opencode import OpenCodeRunner, Question
 
-__all__ = ["ClaudeRunner", "OpenCodeRunner", "OpenCodeResult", "Question"]
+__all__ = ["ClaudeRunner", "OpenCodeRunner", "Question"]

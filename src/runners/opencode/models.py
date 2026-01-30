@@ -7,22 +7,6 @@ from typing import Awaitable, Callable
 
 
 @dataclass
-class OpenCodeResult:
-    """Final result from an OpenCode run."""
-
-    text: str
-    session_id: str | None
-    cost: float
-    tokens_in: int
-    tokens_out: int
-    tokens_reasoning: int
-    tokens_cache_read: int
-    tokens_cache_write: int
-    duration_s: float
-    tool_count: int
-
-
-@dataclass
 class Question:
     """A question from the AI to the user."""
 
@@ -30,7 +14,7 @@ class Question:
     questions: list[dict]  # [{header, question, options: [{label, description}]}]
 
 
-Event = tuple[str, str | OpenCodeResult | Question]
+Event = tuple[str, object]
 
 # Type for question callback: receives Question, returns answers array
 # Each answer is a list of selected option labels (one per question, positional)
