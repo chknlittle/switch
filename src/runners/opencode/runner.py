@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import json
 import logging
 import os
@@ -434,14 +433,21 @@ class OpenCodeRunner(BaseRunner):
         self._cancelled = True
         if sse_task:
             sse_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await sse_task
+            await sse_task
+
+        if message_task and not message_task.done():
+            message_task.cancel()
+            await message_task
+
         if (
             self._client_session
             and self._active_session_id
             and not self._client_session.closed
         ):
-            await self._client.abort_session(self._client_session, self._active_session_id)
+            await self._client.abort_session(
+                self._client_session, self._active_session_id
+            )
+
         if self._abort_task and not self._abort_task.done():
             await self._abort_task
         self._client_session = None

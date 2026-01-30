@@ -11,6 +11,7 @@ from typing import Callable
 import aiohttp
 
 from src.attachments import Attachment
+from src.runners.opencode.errors import OpenCodeHTTPError, OpenCodeProtocolError
 from src.runners.opencode.models import Question
 
 log = logging.getLogger("opencode")
@@ -55,10 +56,19 @@ class OpenCodeClient:
             text = await resp.text()
             if resp.status >= 400:
                 detail = text.strip() or resp.reason
-                raise RuntimeError(f"OpenCode HTTP {resp.status}: {detail}")
+                raise OpenCodeHTTPError(
+                    resp.status, method=method, url=url, detail=detail
+                )
             if not text:
                 return None
-            return json.loads(text)
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as e:
+                preview = text.strip().replace("\n", " ")[:2000]
+                raise OpenCodeProtocolError(
+                    "Invalid JSON response body",
+                    payload_preview=preview,
+                ) from e
 
     async def check_health(self, session: aiohttp.ClientSession) -> None:
         url = self._make_url("/global/health")
@@ -211,7 +221,12 @@ class OpenCodeClient:
                         continue
                     if resp.status >= 400:
                         detail = (await resp.text()).strip() or resp.reason
-                        raise RuntimeError(f"OpenCode SSE HTTP {resp.status}: {detail}")
+                        raise OpenCodeHTTPError(
+                            resp.status,
+                            method="GET",
+                            url=url,
+                            detail=detail,
+                        )
                     await self.read_sse_stream(resp, queue, should_stop=should_stop)
                     return
             except asyncio.TimeoutError as e:
@@ -287,7 +302,14 @@ class OpenCodeClient:
                     continue
 
                 payload = "\n".join(data_lines)
-                event = json.loads(payload)
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError as e:
+                    preview = payload.strip().replace("\n", " ")[:2000]
+                    raise OpenCodeProtocolError(
+                        "Invalid JSON in SSE data field",
+                        payload_preview=preview,
+                    ) from e
                 if isinstance(event, dict):
                     await queue.put(event)
 
