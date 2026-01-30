@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import shlex
@@ -12,6 +11,7 @@ from typing import AsyncIterator
 from src.runners.base import BaseRunner, RunState
 from src.runners.claude_processor import ClaudeEventProcessor
 from src.runners.pipeline import JSONLineStats, iter_json_line_pipeline
+from src.runners.subprocess_transport import SubprocessTransport
 
 log = logging.getLogger("claude")
 
@@ -36,7 +36,7 @@ class ClaudeRunner(BaseRunner):
         session_name: str | None = None,
     ):
         super().__init__(working_dir, output_dir, session_name)
-        self.process: asyncio.subprocess.Process | None = None
+        self._transport = SubprocessTransport()
         self._processor = ClaudeEventProcessor(
             log_to_file=self._log_to_file,
             log_response=self._log_response,
@@ -115,20 +115,15 @@ class ClaudeRunner(BaseRunner):
             non_json_lines: list[str] = []
 
             try:
-                self.process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
+                stdout = await self._transport.start(
+                    cmd,
                     cwd=self.working_dir,
-                    limit=10 * 1024 * 1024,
+                    stdout_limit=10 * 1024 * 1024,
                 )
-
-                if self.process.stdout is None:
-                    raise RuntimeError("Claude process stdout missing")
 
                 stats = JSONLineStats()
                 async for result in iter_json_line_pipeline(
-                    byte_stream=self.process.stdout,
+                    byte_stream=stdout,
                     state=state,
                     parse_event=self._processor.parse_event,
                     stats=stats,
@@ -138,13 +133,13 @@ class ClaudeRunner(BaseRunner):
                 emitted_any = stats.emitted_any
                 non_json_lines = stats.non_json_lines
 
-                await self.process.wait()
+                returncode = await self._transport.wait()
 
                 # If we got no structured events and the process failed, this is
                 # often a CLI flag mismatch. Retry with the next arg variant.
                 if (
                     not emitted_any
-                    and (self.process.returncode or 0) != 0
+                    and returncode != 0
                     and extra_args is not None
                     and self._looks_like_unknown_flag_error(non_json_lines)
                     and idx < len(attempt_args)
@@ -167,5 +162,4 @@ class ClaudeRunner(BaseRunner):
 
     def cancel(self) -> None:
         """Terminate the running process."""
-        if self.process:
-            self.process.terminate()
+        self._transport.cancel()
