@@ -1,7 +1,8 @@
 flowchart TB
   %% OpenCodeRunner internals (HTTP + SSE)
 
-  SessionBot["SessionBot\n(src/bots/session/bot.py)"]
+  SessionBot["SessionBot (XMPP adapter)\n(src/bots/session/bot.py)"]
+  Runtime["SessionRuntime\n(src/core/session_runtime/runtime.py)"]
   Runner["OpenCodeRunner\n(src/runners/opencode/runner.py)"]
   Config["OpenCodeConfig\n(config.py)\nmodel/agent/reasoning\nquestion_callback"]
 
@@ -13,7 +14,8 @@ flowchart TB
   Server["External OpenCode server\nHTTP + SSE"]
 
   %% Wiring
-  SessionBot -->|create_runner engine=opencode| Runner
+  SessionBot -->|answer question-reply| Runtime
+  Runtime -->|create_runner engine=opencode| Runner
   Runner --> Config
   Runner --> Client
   Runner --> Transport
@@ -27,14 +29,16 @@ flowchart TB
 
   %% Questions loop
   Q["question asked\n(event)"]
-  A["answer_question\nquestion_callback"]
+  A["ask user + await reply\n(question_callback)"]
 
-  Pipe --> Q --> SessionBot
-  SessionBot --> A --> Client
+  Pipe --> Q --> Runtime
+  Runtime -->|question meta| SessionBot
+  SessionBot -->|user reply| Runtime
+  Runtime --> A --> Client
   Client -->|POST /question/<rid>/reply| Server
 
   %% Events back
-  Pipe -->|events: tool/text/result| Runner --> SessionBot
+  Pipe -->|events: tool/text/result| Runner --> Runtime
 
   classDef cancel stroke:#b00020,stroke-width:2px,fill:#fff5f6,color:#111;
   class Transport cancel;

@@ -13,7 +13,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from src.bots.ralph_mixin import RalphMixin
-from src.bots.session.actor import SessionActor
+from src.core.session_runtime import SessionRuntime
+from src.core.session_runtime.ports import (
+    AttachmentPromptPort,
+    HistoryPort,
+    MessageStorePort,
+    ReplyPort,
+    RunnerFactoryPort,
+    SessionState,
+    SessionStorePort,
+)
 from src.bots.session.inbound import (
     extract_attachment_urls,
     extract_switch_meta,
@@ -80,7 +89,6 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self.ejabberd_ctl = ejabberd_ctl
         self.manager = manager
         self.runner: Runner | None = None
-        self._run_task: asyncio.Future | None = None
         self.processing = False
         self.shutting_down = False
         self._typing = TypingIndicator(
@@ -89,17 +97,11 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             is_shutting_down=lambda: self.shutting_down,
         )
 
-        self._actor = SessionActor(
-            process_one=self._actor_process_one,
-            on_error=lambda e: self.send_reply(f"Error: {e}"),
-            start_work=self._actor_start_work,
-            finish_work=self._actor_finish_work,
-            is_shutting_down=lambda: self.shutting_down,
-            log_exception=lambda msg: self.log.exception(msg),
-        )
+        self._runtime = self._build_runtime()
 
-        # request_id -> Future(answer) where answer is either a raw user string
-        # or a structured OpenCode-style answers array.
+        # Legacy attributes kept for compatibility with older helper paths.
+        # New message processing uses SessionRuntime.
+        self._run_task: asyncio.Future | None = None
         self._pending_question_answers: dict[str, asyncio.Future] = {}
         self.attachment_store = AttachmentStore()
         self.init_ralph(RalphLoopRepository(self.db))
@@ -110,22 +112,114 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         self.add_event_handler("message", self.on_message)
         self.add_event_handler("disconnected", self.on_disconnected)
 
-    async def _actor_process_one(
-        self, body: str, trigger_response: bool, attachments: object
-    ) -> None:
-        await self._process_one_message_now(
-            body,
-            trigger_response=trigger_response,
-            attachments=attachments if isinstance(attachments, list) else None,
+    # -------------------------------------------------------------------------
+    # Runtime wiring
+    # -------------------------------------------------------------------------
+
+    class _ReplyAdapter(ReplyPort):
+        def __init__(self, bot: "SessionBot"):
+            self._bot = bot
+
+        def send_reply(
+            self,
+            text: str,
+            *,
+            meta_type: str | None = None,
+            meta_tool: str | None = None,
+            meta_attrs: dict[str, str] | None = None,
+            meta_payload: object | None = None,
+        ) -> None:
+            self._bot.send_reply(
+                text,
+                meta_type=meta_type,
+                meta_tool=meta_tool,
+                meta_attrs=meta_attrs,
+                meta_payload=meta_payload,
+            )
+
+    class _SessionsAdapter(SessionStorePort):
+        def __init__(self, repo: SessionRepository):
+            self._repo = repo
+
+        def get(self, name: str) -> SessionState | None:
+            s = self._repo.get(name)
+            if not s:
+                return None
+            return SessionState(
+                name=s.name,
+                active_engine=s.active_engine,
+                claude_session_id=s.claude_session_id,
+                opencode_session_id=s.opencode_session_id,
+                opencode_agent=s.opencode_agent,
+                model_id=s.model_id,
+                reasoning_mode=s.reasoning_mode,
+            )
+
+        def update_last_active(self, name: str) -> None:
+            self._repo.update_last_active(name)
+
+        def update_claude_session_id(self, name: str, session_id: str) -> None:
+            self._repo.update_claude_session_id(name, session_id)
+
+        def update_opencode_session_id(self, name: str, session_id: str) -> None:
+            self._repo.update_opencode_session_id(name, session_id)
+
+    class _MessagesAdapter(MessageStorePort):
+        def __init__(self, repo: MessageRepository):
+            self._repo = repo
+
+        def add(self, session_name: str, role: str, content: str, engine: str) -> None:
+            self._repo.add(session_name, role, content, engine)
+
+    class _RunnerFactoryAdapter(RunnerFactoryPort):
+        def create(
+            self,
+            engine: str,
+            *,
+            working_dir: str,
+            output_dir: Path,
+            session_name: str,
+            opencode_config: OpenCodeConfig | None = None,
+        ) -> Runner:
+            return create_runner(
+                engine,
+                working_dir=working_dir,
+                output_dir=output_dir,
+                session_name=session_name,
+                opencode_config=opencode_config,
+            )
+
+    class _HistoryAdapter(HistoryPort):
+        def append_to_history(self, message: str, working_dir: str, claude_session_id: str | None) -> None:
+            append_to_history(message, working_dir, claude_session_id)
+
+        def log_activity(self, message: str, *, session: str, source: str) -> None:
+            log_activity(message, session=session, source=source)
+
+    class _PromptAdapter(AttachmentPromptPort):
+        def augment_prompt(self, body: str, attachments: list[Attachment] | None) -> str:
+            if not attachments:
+                return (body or "").strip()
+            lines: list[str] = [(body or "").strip(), "", "User attached image(s):"]
+            for a in attachments:
+                lines.append(f"- {a.local_path}")
+            return "\n".join(lines).strip()
+
+    def _build_runtime(self) -> SessionRuntime:
+        return SessionRuntime(
+            session_name=self.session_name,
+            working_dir=self.working_dir,
+            output_dir=self.output_dir,
+            sessions=self._SessionsAdapter(self.sessions),
+            messages=self._MessagesAdapter(self.messages),
+            reply=self._ReplyAdapter(self),
+            typing=self._typing,
+            runner_factory=self._RunnerFactoryAdapter(),
+            history=self._HistoryAdapter(),
+            prompt=self._PromptAdapter(),
+            infer_meta_tool_from_summary=self._infer_meta_tool_from_summary,
+            on_processing_changed=lambda active: setattr(self, "processing", active),
         )
-
-    def _actor_start_work(self) -> None:
-        self.processing = True
-        self._typing.start()
-
-    def _actor_finish_work(self) -> None:
-        self.processing = False
-        self._typing.stop()
 
     # -------------------------------------------------------------------------
     # XMPP lifecycle
@@ -259,23 +353,17 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         """
         cancelled_any = False
 
-        if self._actor.cancel_queued():
+        if self._runtime.cancel_operations(notify=notify):
             cancelled_any = True
 
         if self.ralph_loop:
             cancelled_any = True
             self.ralph_loop.cancel()
 
+        # Best-effort: also cancel any ad-hoc runner paths.
         if self.runner and self.processing:
             cancelled_any = True
             self.runner.cancel()
-
-        if self._run_task and not self._run_task.done():
-            cancelled_any = True
-            self._run_task.cancel()
-
-        if notify and cancelled_any:
-            self.send_reply("Cancelling current work...")
 
         return cancelled_any
 
@@ -291,7 +379,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
 
         self.shutting_down = True
 
-        self._actor.shutdown()
+        self._runtime.shutdown()
 
         # Stop any in-flight work and drop queued messages.
         self.cancel_operations(notify=False)
@@ -418,8 +506,8 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             await self.spawn_sibling_session(body[1:].strip())
             return
 
-        queued_before = self.processing or (self._actor.pending_count() > 0)
-        await self._actor.enqueue(
+        queued_before = self.processing or (self._runtime.pending_count() > 0)
+        await self._runtime.enqueue(
             body,
             attachments,
             trigger_response=True,
@@ -427,7 +515,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
             wait=False,
         )
         if queued_before and not is_scheduled:
-            self.send_reply(f"Queued ({self._actor.pending_count()} pending)")
+            self.send_reply(f"Queued ({self._runtime.pending_count()} pending)")
         return
 
     def _send_attachment_meta(self, attachments: list[Attachment]) -> None:
@@ -589,7 +677,7 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         attachments: list[Attachment] | None = None,
     ) -> None:
         """Enqueue a message for serialized processing."""
-        await self._actor.enqueue(
+        await self._runtime.enqueue(
             body,
             list(attachments or []),
             trigger_response=trigger_response,
@@ -960,11 +1048,13 @@ class SessionBot(RalphMixin, BaseXMPPBot):
         return "\n".join([p for p in parts if p])
 
     def answer_pending_question(self, answer: object, *, request_id: str | None = None) -> bool:
-        """Answer a pending question. Called from message handler."""
+        """Answer a pending question (OpenCode server questions)."""
+        if self._runtime.answer_question(answer, request_id=request_id):
+            return True
+
+        # Back-compat: allow older ad-hoc question flows.
         if not self._pending_question_answers:
             return False
-
-        # Default to the most recent pending question.
         rid = request_id or list(self._pending_question_answers.keys())[-1]
         future = self._pending_question_answers.get(rid)
         if future and not future.done():

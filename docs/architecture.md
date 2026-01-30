@@ -66,11 +66,11 @@ flowchart TB
 
   subgraph Session["One Session"]
     direction TB
-    SessionBot["SessionBot\n(src/bots/session/bot.py)"]
+    SessionBot["SessionBot (XMPP adapter)\n(src/bots/session/bot.py)"]
     Inbound["Inbound parse\n(inbound.py)"]
     Typing["Typing keepalive\n(typing.py)"]
-    Actor["[Q] SessionActor\n(queue + serialize)\n(actor.py)"]
-    Cancel["[X] cancel_operations\n(drop queue + cancel runner)"]
+    Runtime["[Q] SessionRuntime\n(queue + cancel + run)\n(src/core/session_runtime/runtime.py)"]
+    Cancel["[X] cancel_operations\n(drop queued + cancel in-flight)"]
   end
 
   subgraph Runners["Runners"]
@@ -98,29 +98,33 @@ flowchart TB
   XMPP -->|"session msg"| SessionBot
   SessionBot --> Inbound
   SessionBot --> Typing
-  SessionBot -->|enqueue| Actor
-  SessionBot -->|persist| DB
+  SessionBot -->|enqueue| Runtime
+  Runtime -->|persist| DB
 
   %% Attachments
   SessionBot -->|download URLs| AttStore -->|serve| AttHTTP
 
   %% Runner selection
-  Actor -->|dequeue 1| Registry --> Ports
+  Runtime -->|dequeue 1| Registry --> Ports
   Ports -->|engine=claude| Claude
   Ports -->|engine=opencode| OpenCode
   OpenCode <--> |HTTP + SSE| OpenCodeSrv
 
   %% Streaming back
-  Claude -->|events: tool/text/result| SessionBot
-  OpenCode -->|events: tool/text/question/result| SessionBot
+  Claude -->|events: tool/text/result| Runtime
+  OpenCode -->|events: tool/text/question/result| Runtime
+
+  %% Back to user
+  Runtime -->|replies + meta| SessionBot
+  SessionBot -->|XMPP send| XMPP
 
   %% Cancellation
   SessionBot -.-> Cancel
-  Cancel -.->|drop queued| Actor
+  Cancel -.->|drop queued| Runtime
   Cancel -.->|Runner cancel| Ports
 
   classDef cancel stroke:#b00020,stroke-width:2px,fill:#fff5f6,color:#111;
-  class Cancel,Actor cancel;
+  class Cancel,Runtime cancel;
 ```
 <!-- /DIAGRAM:session-message-flow -->
 
@@ -130,7 +134,8 @@ flowchart TB
 flowchart TB
   %% OpenCodeRunner internals (HTTP + SSE)
 
-  SessionBot["SessionBot\n(src/bots/session/bot.py)"]
+  SessionBot["SessionBot (XMPP adapter)\n(src/bots/session/bot.py)"]
+  Runtime["SessionRuntime\n(src/core/session_runtime/runtime.py)"]
   Runner["OpenCodeRunner\n(src/runners/opencode/runner.py)"]
   Config["OpenCodeConfig\n(config.py)\nmodel/agent/reasoning\nquestion_callback"]
 
@@ -142,7 +147,8 @@ flowchart TB
   Server["External OpenCode server\nHTTP + SSE"]
 
   %% Wiring
-  SessionBot -->|create_runner engine=opencode| Runner
+  SessionBot -->|answer question-reply| Runtime
+  Runtime -->|create_runner engine=opencode| Runner
   Runner --> Config
   Runner --> Client
   Runner --> Transport
@@ -156,14 +162,16 @@ flowchart TB
 
   %% Questions loop
   Q["question asked\n(event)"]
-  A["answer_question\nquestion_callback"]
+  A["ask user + await reply\n(question_callback)"]
 
-  Pipe --> Q --> SessionBot
-  SessionBot --> A --> Client
+  Pipe --> Q --> Runtime
+  Runtime -->|question meta| SessionBot
+  SessionBot -->|user reply| Runtime
+  Runtime --> A --> Client
   Client -->|POST /question/<rid>/reply| Server
 
   %% Events back
-  Pipe -->|events: tool/text/result| Runner --> SessionBot
+  Pipe -->|events: tool/text/result| Runner --> Runtime
 
   classDef cancel stroke:#b00020,stroke-width:2px,fill:#fff5f6,color:#111;
   class Transport cancel;
@@ -190,6 +198,12 @@ This means:
 - Everything stays private within your tailnet
 
 ## Components
+
+## Message Processing (Current)
+
+Switch's session execution is split into a thin XMPP adapter (SessionBot) and a
+single-session runtime (SessionRuntime) that owns queueing, cancellation, and
+runner orchestration.
 
 ### Orchestrator Contacts
 
