@@ -58,8 +58,6 @@ class OpenCodeClient:
                 raise RuntimeError(f"OpenCode HTTP {resp.status}: {detail}")
             if not text:
                 return None
-            # Bubble JSON decode errors to the caller so higher-level middleware
-            # can report them coherently.
             return json.loads(text)
 
     async def check_health(self, session: aiohttp.ClientSession) -> None:

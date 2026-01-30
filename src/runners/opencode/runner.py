@@ -317,8 +317,7 @@ class OpenCodeRunner(BaseRunner):
         finally:
             if not answered:
                 # Avoid leaving the server waiting on a question that will never be answered.
-                with suppress(Exception):
-                    await self._client.reject_question(session, question)
+                await self._client.reject_question(session, question)
 
     async def _process_event_loop(
         self,
@@ -436,18 +435,16 @@ class OpenCodeRunner(BaseRunner):
         self._cancelled = True
         if sse_task:
             sse_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
+            with suppress(asyncio.CancelledError):
                 await sse_task
         if (
             self._client_session
             and self._active_session_id
             and not self._client_session.closed
         ):
-            with suppress(Exception):
-                await self._client.abort_session(self._client_session, self._active_session_id)
+            await self._client.abort_session(self._client_session, self._active_session_id)
         if self._abort_task and not self._abort_task.done():
-            with suppress(Exception):
-                await self._abort_task
+            await self._abort_task
         self._client_session = None
         self._abort_task = None
 
