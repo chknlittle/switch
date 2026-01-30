@@ -10,15 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from typing import AsyncIterator, Awaitable, Callable
 
 import aiohttp
 
 from src.runners.base import RunState
-from src.runners.opencode.events import extract_session_id
 from src.runners.opencode.models import Event, Question
 from src.runners.opencode.processor import OpenCodeEventProcessor
+from src.runners.opencode.events import extract_session_id
+from src.runners.pipeline import iter_queue_pipeline
 
 
 async def iter_opencode_events(
@@ -33,52 +33,29 @@ async def iter_opencode_events(
     should_cancel: Callable[[], bool],
     handle_question: Callable[[aiohttp.ClientSession, Question], Awaitable[None]],
 ) -> AsyncIterator[Event]:
-    """Yield parsed events until completion or cancellation."""
-
     idle_timeout_s = float(os.getenv("OPENCODE_POST_MESSAGE_IDLE_TIMEOUT_S", "30"))
-    message_done_at: float | None = None
-    last_event_at = time.monotonic()
 
-    while True:
-        if should_cancel():
-            break
-
-        if sse_task.done() and not sse_task.cancelled():
-            exc = sse_task.exception()
-            if exc:
-                raise exc
-
-        if message_task.done() and (state.saw_result or state.saw_error):
-            break
-
-        if message_task.done() and message_done_at is None:
-            message_done_at = time.monotonic()
-
-        if message_done_at is not None and not state.saw_result and not state.saw_error:
-            if (time.monotonic() - last_event_at) >= idle_timeout_s:
-                break
-
-        try:
-            payload = await asyncio.wait_for(event_queue.get(), timeout=0.25)
-        except asyncio.TimeoutError:
-            continue
-
-        if not isinstance(payload, dict):
-            continue
-
-        payload_session = extract_session_id(payload)
-        if payload_session and payload_session != session_id:
-            continue
-
-        result = processor.parse_event(payload, state)
-        if not result:
-            continue
-
-        last_event_at = time.monotonic()
-
-        event_type, data = result
-        if event_type == "question" and isinstance(data, Question):
-            yield result
+    async def _handle_question_event(e: Event) -> None:
+        _, data = e
+        if isinstance(data, Question):
             await handle_question(session, data)
-        else:
-            yield result
+
+    def _is_question(e: Event) -> bool:
+        event_type, data = e
+        return event_type == "question" and isinstance(data, Question)
+
+    async for e in iter_queue_pipeline(
+        event_queue=event_queue,
+        session_id=session_id,
+        state=state,
+        parse_event=processor.parse_event,
+        extract_session_id=extract_session_id,
+        sse_task=sse_task,
+        message_task=message_task,
+        should_cancel=should_cancel,
+        idle_timeout_s=idle_timeout_s,
+        is_done=lambda s: s.saw_result or s.saw_error,
+        is_question=_is_question,
+        handle_question=_handle_question_event,
+    ):
+        yield e
