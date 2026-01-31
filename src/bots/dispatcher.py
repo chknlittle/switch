@@ -71,6 +71,7 @@ class DispatcherBot(BaseXMPPBot):
             "/recent": self._cmd_recent,
             "/commit": self._cmd_commit,
             "/c": self._cmd_commit,
+            "/ralph": self._cmd_ralph,
             "/help": self._cmd_help,
         }
 
@@ -90,7 +91,11 @@ class DispatcherBot(BaseXMPPBot):
         self.connect()
 
     async def on_message(self, msg):
-        await self.guard(self._handle_dispatcher_message(msg), recipient=self.xmpp_recipient, context="dispatcher.on_message")
+        await self.guard(
+            self._handle_dispatcher_message(msg),
+            recipient=self.xmpp_recipient,
+            context="dispatcher.on_message",
+        )
 
     async def _handle_dispatcher_message(self, msg):
         if msg["type"] not in ("chat", "normal") or not msg["body"]:
@@ -118,7 +123,9 @@ class DispatcherBot(BaseXMPPBot):
 
         if body.startswith("/"):
             if is_loopback:
-                self.send_reply("Loopback only supports session creation.", recipient=reply_to)
+                self.send_reply(
+                    "Loopback only supports session creation.", recipient=reply_to
+                )
                 return
             await self._dispatch_command(body)
             return
@@ -187,7 +194,9 @@ class DispatcherBot(BaseXMPPBot):
             host, repo = arg.split(":", 1)
             repo_path = f"~/{repo}" if not repo.startswith("/") else repo
 
-            self.send_reply(f"Committing {repo} on {host}...", recipient=self.xmpp_recipient)
+            self.send_reply(
+                f"Committing {repo} on {host}...", recipient=self.xmpp_recipient
+            )
 
             prompt = (
                 f"This project is on remote host '{host}'. "
@@ -199,7 +208,9 @@ class DispatcherBot(BaseXMPPBot):
             # Local repo
             repo_path = Path.home() / arg
             if not (repo_path / ".git").exists():
-                self.send_reply(f"Not a git repo: {repo_path}", recipient=self.xmpp_recipient)
+                self.send_reply(
+                    f"Not a git repo: {repo_path}", recipient=self.xmpp_recipient
+                )
                 return
 
             self.send_reply(f"Committing {arg}...", recipient=self.xmpp_recipient)
@@ -228,7 +239,7 @@ class DispatcherBot(BaseXMPPBot):
 
         # Strip echoed prompt from response if present
         if result_text.startswith(prompt):
-            result_text = result_text[len(prompt):].lstrip()
+            result_text = result_text[len(prompt) :].lstrip()
 
         if result_text:
             self.send_reply(result_text.strip(), recipient=self.xmpp_recipient)
@@ -249,7 +260,63 @@ class DispatcherBot(BaseXMPPBot):
             "  /recent - recent with status\n"
             "  /kill <name> - end session\n"
             "  /commit [host:]<repo> - commit and push\n"
+            "  /ralph <args> - create a session and start a Ralph loop\n"
             "  /help - this message",
+            recipient=self.xmpp_recipient,
+        )
+
+    async def _cmd_ralph(self, arg: str) -> None:
+        """Create a new session and run a /ralph loop inside it.
+
+        We support running /ralph from the dispatcher because users often want to
+        kick off long loops from their "home" contact, not an already-open session.
+        """
+        if not arg.strip():
+            self.send_reply(
+                "Usage: /ralph <prompt/args>\n"
+                "Example: /ralph 10 Refactor auth --wait 5 --done 'All tests pass'",
+                recipient=self.xmpp_recipient,
+            )
+            return
+
+        if not self.manager:
+            self.send_reply(
+                "Session manager unavailable.", recipient=self.xmpp_recipient
+            )
+            return
+
+        # Use a stable, short name hint so repeated loops become ralph, ralph-2, ...
+        # Create the session first, then invoke the /ralph command via the session
+        # command handler. (Directly enqueuing "/ralph ..." as a normal message
+        # would send it to the model instead of starting the Ralph loop.)
+        created_name = await lifecycle_create_session(
+            self.manager,
+            "",
+            engine=self.engine,
+            opencode_agent=self.opencode_agent,
+            label=self.label,
+            name_hint="ralph",
+            announce="Ralph session '{name}' ({label}). Starting loop...",
+            dispatcher_jid=str(self.boundjid.bare),
+        )
+        if not created_name:
+            self.send_reply(
+                "Failed to create Ralph session", recipient=self.xmpp_recipient
+            )
+            return
+
+        bot = self.manager.session_bots.get(created_name)
+        if not bot:
+            self.send_reply(
+                f"Started {created_name}@{self.xmpp_domain}, but bot not found",
+                recipient=self.xmpp_recipient,
+            )
+            return
+
+        await bot.commands.handle(f"/ralph {arg.strip()}")
+
+        self.send_reply(
+            f"Started Ralph in {created_name}@{self.xmpp_domain}",
             recipient=self.xmpp_recipient,
         )
 
@@ -259,7 +326,9 @@ class DispatcherBot(BaseXMPPBot):
         message = first_message.strip()
 
         if not self.manager:
-            self.send_reply("Session manager unavailable.", recipient=self.xmpp_recipient)
+            self.send_reply(
+                "Session manager unavailable.", recipient=self.xmpp_recipient
+            )
             return
 
         created_name = await lifecycle_create_session(

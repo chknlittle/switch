@@ -9,6 +9,19 @@ tmp/
 uploads/*
 !uploads/.gitkeep
 
+# Certificates / private keys
+certs/
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.csr
+
 # Legacy/local artifacts (avoid confusing shadow state under src/)
 src/sessions.db
 src/output/

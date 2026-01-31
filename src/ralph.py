@@ -9,6 +9,19 @@ from __future__ import annotations
 import shlex
 
 
+_UNICODE_DASHES = {
+    "\u2010",  # hyphen
+    "\u2011",  # non-breaking hyphen
+    "\u2012",  # figure dash
+    "\u2013",  # en dash
+    "\u2014",  # em dash
+    "\u2212",  # minus sign
+    "\ufe58",  # small em dash
+    "\ufe63",  # small hyphen-minus
+    "\uff0d",  # fullwidth hyphen-minus
+}
+
+
 def parse_ralph_command(body: str) -> dict | None:
     """Parse /ralph command into components.
 
@@ -31,6 +44,13 @@ def parse_ralph_command(body: str) -> dict | None:
     except ValueError:
         parts = rest.split()
 
+    # Be forgiving about unicode dashes. On phones/chat apps, users often type
+    # "--wait" but it gets auto-replaced into an em dash ("—wait").
+    parts = [
+        ("--" + p[1:]) if (p and p[0] in _UNICODE_DASHES and not p.startswith("--")) else p
+        for p in parts
+    ]
+
     max_iterations = 0
     completion_promise = None
     wait_minutes = 2.0 / 60.0
@@ -46,14 +66,32 @@ def parse_ralph_command(body: str) -> dict | None:
                 continue
             except ValueError:
                 pass
+        elif part.startswith("--max="):
+            try:
+                max_iterations = int(part.split("=", 1)[1])
+                i += 1
+                continue
+            except ValueError:
+                pass
         elif part in ("--done", "--completion-promise", "-d") and i + 1 < len(parts):
             completion_promise = parts[i + 1]
             i += 2
+            continue
+        elif part.startswith("--done=") or part.startswith("--completion-promise="):
+            completion_promise = part.split("=", 1)[1]
+            i += 1
             continue
         elif part in ("--wait", "--wait-min", "--wait-minutes", "--interval", "--sleep", "-w") and i + 1 < len(parts):
             try:
                 wait_minutes = float(parts[i + 1])
                 i += 2
+                continue
+            except ValueError:
+                pass
+        elif part.startswith("--wait=") or part.startswith("--wait-min=") or part.startswith("--wait-minutes="):
+            try:
+                wait_minutes = float(part.split("=", 1)[1])
+                i += 1
                 continue
             except ValueError:
                 pass

@@ -223,11 +223,13 @@ class CommandHandler:
         ralph_args = parse_ralph_command(body)
         if ralph_args is None:
             self.bot.send_reply(
-                "Usage: /ralph <prompt> [--max N] [--done 'promise'] [--wait M]\n"
+                "Usage: /ralph <prompt> [--max N] [--done 'promise'] [--wait MINUTES]\n"
                 "  or:  /ralph <N> <prompt>  (shorthand)\n\n"
                 "Examples:\n"
                 "  /ralph 20 Fix all type errors\n"
                 "  /ralph Refactor auth --max 10 --wait 5 --done 'All tests pass'\n\n"
+                "Notes:\n"
+                "  --wait is in minutes (e.g. 0.5 = 30 seconds).\n"
                 "Commands:\n"
                 "  /ralph-status - check progress\n"
                 "  /ralph-cancel - stop loop"
