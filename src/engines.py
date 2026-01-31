@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
-OPENCODE_MODEL_DEFAULT = "glm_vllm/glm-4.7-flash-heretic.Q8_0.gguf"
+OPENCODE_MODEL_DEFAULT = os.getenv("OPENCODE_MODEL_DEFAULT", "glm_vllm/glm-4.7-flash")
 OPENCODE_MODEL_GPT = "openai/gpt-5.2"
 OPENCODE_MODEL_ZEN = "opencode/glm-4.7"
 OPENCODE_MODEL_GPT_OR = "openrouter/openai/gpt-5.2"
