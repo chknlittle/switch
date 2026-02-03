@@ -30,6 +30,8 @@ class DirectoryBot(BaseXMPPBot):
     """Directory service that serves hierarchy via disco + pubsub."""
 
     DISPATCHERS_NODE = "dispatchers"
+    ACTIVE_SESSIONS_LIMIT = 200
+    ACTIVE_SESSIONS_CACHE_TTL_S = 1.0
 
     def __init__(
         self,
@@ -47,6 +49,11 @@ class DirectoryBot(BaseXMPPBot):
         self.xmpp_domain = xmpp_domain
         self.dispatchers_config = dispatchers_config
         self.pubsub_service_jid = pubsub_service_jid
+
+        # Session list browsing can generate bursts of disco#items queries.
+        # Cache for a short TTL to avoid repeated DB scans.
+        self._active_sessions_cache_ts: float = 0.0
+        self._active_sessions_cache: list[Any] = []
 
         # Directory needs disco + pubsub.
         self.register_plugin("xep_0030")
@@ -131,7 +138,16 @@ class DirectoryBot(BaseXMPPBot):
         key = self._dispatcher_key_for_group_jid(group_jid)
 
         # Default: show active sessions.
-        sessions = self.sessions.list_active_recent(limit=200)
+        now = time.time()
+        if (
+            self._active_sessions_cache
+            and (now - self._active_sessions_cache_ts) < self.ACTIVE_SESSIONS_CACHE_TTL_S
+        ):
+            sessions = self._active_sessions_cache
+        else:
+            sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
+            self._active_sessions_cache = sessions
+            self._active_sessions_cache_ts = now
 
         # If we can map the group to a dispatcher, filter to that dispatcher.
         if key:

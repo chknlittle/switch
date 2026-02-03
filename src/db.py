@@ -373,6 +373,15 @@ def init_db() -> sqlite3.Connection:
         )
     """)
 
+    # Indexes: session listing is on the hot path (directory/disco browsing).
+    # Without these, SQLite scans/sorts the whole table on each request.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_status_last_active ON sessions(status, last_active DESC)"
+    )
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ralph_loops (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -401,6 +410,10 @@ def init_db() -> sqlite3.Connection:
             FOREIGN KEY (session_name) REFERENCES sessions(name)
         )
     """)
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_messages_session_name_id ON session_messages(session_name, id DESC)"
+    )
 
     # Migrations for existing databases
     migrations = [
