@@ -22,6 +22,9 @@ class RalphConfig:
     max_iterations: int = 0
     completion_promise: str | None = None
     wait_seconds: float = 2.0
+    # If True, each iteration runs in a fresh remote session (no history).
+    # This makes the model see only `prompt` each time.
+    prompt_only: bool = False
     # If set, force Ralph iterations to use a specific engine.
     # If None, use the session's current active engine.
     force_engine: str | None = None

@@ -62,12 +62,23 @@ class CommandHandler:
         """Handle a command. Returns True if command was handled."""
         cmd = body.strip().lower()
 
-        # Try exact matches first
+        # Exact matches first.
         for prefix, (handler, exact) in self._commands.items():
             if exact and cmd == prefix:
                 return await handler(body)
-            if not exact and cmd.startswith(prefix):
-                return await handler(body)
+
+        # Then prefix matches, preferring the longest prefix (avoids overlaps like
+        # /ralph vs /ralph-look).
+        best: tuple[int, Callable[..., Awaitable[bool]]] | None = None
+        for prefix, (handler, exact) in self._commands.items():
+            if exact:
+                continue
+            if cmd.startswith(prefix):
+                score = len(prefix)
+                if best is None or score > best[0]:
+                    best = (score, handler)
+        if best is not None:
+            return await best[1](body)
 
         return False
 
@@ -226,6 +237,7 @@ class CommandHandler:
         if ralph_args is None:
             self.bot.send_reply(
                 "Usage: /ralph <prompt> [--max N] [--done 'promise'] [--wait MINUTES]\n"
+                "                 [--look]  (prompt-only: no cross-iteration context)\n"
                 "  or:  /ralph <N> <prompt>  (shorthand)\n\n"
                 "Examples:\n"
                 "  /ralph 20 Fix all type errors\n"
@@ -250,6 +262,27 @@ class CommandHandler:
                 max_iterations=int(ralph_args["max_iterations"] or 0),
                 completion_promise=ralph_args["completion_promise"],
                 wait_seconds=float(ralph_args["wait_minutes"] or 0.0) * 60.0,
+                prompt_only=bool(ralph_args.get("prompt_only")),
             )
         )
         return True
+
+    @command("/ralph-look", "/ralphlook", exact=False)
+    async def ralph_look(self, body: str) -> bool:
+        """Start a prompt-only Ralph loop (fresh context every iteration)."""
+        raw = body.strip()
+        low = raw.lower()
+        if low.startswith("/ralph-look"):
+            rest = raw[len("/ralph-look") :].strip()
+        else:
+            rest = raw[len("/ralphlook") :].strip()
+
+        if not rest:
+            self.bot.send_reply(
+                "Usage: /ralph-look <prompt> [--max N] [--done 'promise'] [--wait MINUTES]\n"
+                "  or:  /ralph-look <N> <prompt>  (shorthand)"
+            )
+            return True
+
+        # Delegate to /ralph with --look forced on.
+        return await self.ralph(f"/ralph {rest} --look")

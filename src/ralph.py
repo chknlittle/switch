@@ -26,11 +26,11 @@ def parse_ralph_command(body: str) -> dict | None:
     """Parse /ralph command into components.
 
     Formats:
-        /ralph <prompt> --max <N> --done "<promise>" --wait <M>
+        /ralph <prompt> --max <N> --done "<promise>" --wait <M> [--look]
         /ralph <N> <prompt>  (shorthand)
         /ralph <prompt>  (infinite - dangerous!)
 
-    Returns dict with: prompt, max_iterations, completion_promise, wait_minutes
+    Returns dict with: prompt, max_iterations, completion_promise, wait_minutes, prompt_only
     """
     if not body.lower().startswith("/ralph"):
         return None
@@ -54,11 +54,16 @@ def parse_ralph_command(body: str) -> dict | None:
     max_iterations = 0
     completion_promise = None
     wait_minutes = 2.0 / 60.0
+    prompt_only = False
     prompt_parts = []
 
     i = 0
     while i < len(parts):
         part = parts[i]
+        if part in ("--look", "--prompt-only", "--promptonly", "--stateless", "--isolated"):
+            prompt_only = True
+            i += 1
+            continue
         if part in ("--max", "--max-iterations", "-m") and i + 1 < len(parts):
             try:
                 max_iterations = int(parts[i + 1])
@@ -111,4 +116,5 @@ def parse_ralph_command(body: str) -> dict | None:
         "max_iterations": max_iterations,
         "completion_promise": completion_promise,
         "wait_minutes": max(0.0, wait_minutes),
+        "prompt_only": bool(prompt_only),
     }

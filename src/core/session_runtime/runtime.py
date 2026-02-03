@@ -508,7 +508,6 @@ class SessionRuntime:
                     return
 
                 self._ralph_status.total_cost += float(result.cost)
-                preview = result.text[:200] + ("..." if len(result.text) > 200 else "")
                 iter_str = (
                     f"{self._ralph_status.current_iteration}/{cfg.max_iterations}"
                     if cfg.max_iterations and cfg.max_iterations > 0
@@ -516,7 +515,7 @@ class SessionRuntime:
                 )
                 await self._emit(
                     OutboundMessage(
-                        f"[Ralph {iter_str} | {result.tool_count}tools ${result.cost:.3f}]\n\n{preview}"
+                        f"[Ralph {iter_str} | {result.tool_count}tools ${result.cost:.3f}]\n\n{result.text}"
                     )
                 )
 
@@ -581,7 +580,6 @@ class SessionRuntime:
                         return
 
                     self._ralph_status.total_cost += float(result.cost)
-                    preview = result.text[:200] + ("..." if len(result.text) > 200 else "")
                     iter_str = (
                         f"{self._ralph_status.current_iteration}/{cfg.max_iterations}"
                         if cfg.max_iterations and cfg.max_iterations > 0
@@ -589,7 +587,7 @@ class SessionRuntime:
                     )
                     await self._emit(
                         OutboundMessage(
-                            f"[Ralph {iter_str}+ | {result.tool_count}tools ${result.cost:.3f}]\n\n{preview}"
+                            f"[Ralph {iter_str}+ | {result.tool_count}tools ${result.cost:.3f}]\n\n{result.text}"
                         )
                     )
 
@@ -676,22 +674,28 @@ class SessionRuntime:
             cfg, self._ralph_status.current_iteration if self._ralph_status else 1
         )
         try:
-            session_id = (
-                session.opencode_session_id
-                if engine == "opencode"
-                else session.claude_session_id
-            )
+            # In prompt-only mode, each iteration should be isolated: do not
+            # resume any remote session, and do not overwrite the session's
+            # stored resume IDs.
+            session_id = None
+            if not cfg.prompt_only:
+                session_id = (
+                    session.opencode_session_id
+                    if engine == "opencode"
+                    else session.claude_session_id
+                )
             accumulated = ""
             async for event_type, content in self.runner.run(prompt, session_id):
                 if event_type == "session_id" and isinstance(content, str) and content:
-                    if engine == "opencode":
-                        self._sessions.update_opencode_session_id(
-                            self.session_name, content
-                        )
-                    else:
-                        self._sessions.update_claude_session_id(
-                            self.session_name, content
-                        )
+                    if not cfg.prompt_only:
+                        if engine == "opencode":
+                            self._sessions.update_opencode_session_id(
+                                self.session_name, content
+                            )
+                        else:
+                            self._sessions.update_claude_session_id(
+                                self.session_name, content
+                            )
                 elif event_type == "text" and isinstance(content, str):
                     if engine == "opencode":
                         accumulated += content
