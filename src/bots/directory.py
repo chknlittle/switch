@@ -31,7 +31,7 @@ class DirectoryBot(BaseXMPPBot):
 
     DISPATCHERS_NODE = "dispatchers"
     ACTIVE_SESSIONS_LIMIT = 200
-    ACTIVE_SESSIONS_CACHE_TTL_S = 1.0
+    ACTIVE_SESSIONS_CACHE_TTL_S = 3.0
 
     def __init__(
         self,

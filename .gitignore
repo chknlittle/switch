@@ -8,6 +8,9 @@
 .opencode/opencode.jsonc
 output/
 sessions.db
+sessions.db-wal
+sessions.db-shm
+sessions.db-journal
 tmp/
 uploads/*
 !uploads/.gitkeep

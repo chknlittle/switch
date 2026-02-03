@@ -104,6 +104,11 @@ class SessionRuntime:
         self._usage_cost_total: dict[str, float] = {"opencode": 0.0, "claude": 0.0}
         self._last_remote_session_id: dict[str, str | None] = {"opencode": None, "claude": None}
 
+        # Throttle last_active writes. SQLite commits can become a bottleneck under
+        # high message throughput (and directory browsing is read-heavy).
+        self._last_active_written_at: float = 0.0
+        self._last_active_min_interval_s: float = 10.0
+
     def _remember_remote_session_id(self, engine: str, session_id: str | None) -> None:
         if not engine or not session_id:
             return
@@ -374,7 +379,10 @@ class SessionRuntime:
             await self._emit(OutboundMessage("Session not found in database."))
             return
 
-        self._sessions.update_last_active(self.session_name)
+        now = time.monotonic()
+        if (now - self._last_active_written_at) >= self._last_active_min_interval_s:
+            self._sessions.update_last_active(self.session_name)
+            self._last_active_written_at = now
 
         body_for_history = self._prompt.augment_prompt(item.body, item.attachments)
         self._history.append_to_history(
