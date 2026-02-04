@@ -111,9 +111,18 @@ class SessionManager:
     async def start_dispatchers(self):
         """Start all dispatcher bots."""
         for name, cfg in self.dispatchers_config.items():
+            if cfg.get("disabled") is True:
+                log.info(f"Skipping dispatcher (disabled): {name} ({cfg.get('jid')})")
+                continue
+            password = (cfg.get("password") or "").strip()
+            if not password:
+                log.info(
+                    f"Skipping dispatcher (missing password): {name} ({cfg.get('jid')})"
+                )
+                continue
             dispatcher = DispatcherBot(
                 cfg["jid"],
-                cfg["password"],
+                password,
                 self.db,
                 self.working_dir,
                 self.xmpp_recipient,

@@ -118,6 +118,13 @@ def get_xmpp_config() -> dict:
                 "agent": None,
                 "label": "Claude Code",
             },
+            "acorn": {
+                "jid": os.getenv("ACORN_JID", f"acorn@{domain}"),
+                "password": os.getenv("ACORN_PASSWORD", ""),
+                "engine": "external",
+                "agent": None,
+                "label": "Acorn",
+            },
             "oc": {
                 "jid": os.getenv("OC_JID", f"oc@{domain}"),
                 "password": os.getenv("OC_PASSWORD", ""),
