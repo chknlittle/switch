@@ -20,6 +20,7 @@ from src.helpers import (
     register_unique_account,
     slugify,
 )
+
 if TYPE_CHECKING:
     import sqlite3
 
@@ -37,7 +38,9 @@ class _SessionKillManager(Protocol):
     xmpp_recipient: str
     ejabberd_ctl: str
 
-    def notify_directory_sessions_changed(self, dispatcher_jid: str | None = None) -> None: ...
+    def notify_directory_sessions_changed(
+        self, dispatcher_jid: str | None = None
+    ) -> None: ...
 
 
 class _SessionCreateManager(Protocol):
@@ -50,9 +53,13 @@ class _SessionCreateManager(Protocol):
     xmpp_recipient: str
     ejabberd_ctl: str
 
-    async def start_session_bot(self, name: str, jid: str, password: str) -> "SessionBot": ...
+    async def start_session_bot(
+        self, name: str, jid: str, password: str
+    ) -> "SessionBot": ...
 
-    def notify_directory_sessions_changed(self, dispatcher_jid: str | None = None) -> None: ...
+    def notify_directory_sessions_changed(
+        self, dispatcher_jid: str | None = None
+    ) -> None: ...
 
 
 async def create_session(
@@ -102,7 +109,11 @@ async def create_session(
 
     recipient_user = manager.xmpp_recipient.split("@")[0]
     add_roster_subscription(
-        name, manager.xmpp_recipient, "Clients", manager.ejabberd_ctl, manager.xmpp_domain
+        name,
+        manager.xmpp_recipient,
+        "Clients",
+        manager.ejabberd_ctl,
+        manager.xmpp_domain,
     )
     add_roster_subscription(
         recipient_user, jid, "Sessions", manager.ejabberd_ctl, manager.xmpp_domain

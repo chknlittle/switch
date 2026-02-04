@@ -245,7 +245,9 @@ class RalphLoopRepository:
             prompt=row["prompt"],
             completion_promise=row["completion_promise"],
             max_iterations=row["max_iterations"] or 0,
-            wait_seconds=row["wait_seconds"] if row["wait_seconds"] is not None else 2.0,
+            wait_seconds=row["wait_seconds"]
+            if row["wait_seconds"] is not None
+            else 2.0,
             current_iteration=row["current_iteration"] or 0,
             total_cost=row["total_cost"] or 0.0,
             status=row["status"] or "running",
@@ -353,6 +355,18 @@ def init_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
 
+    # Pragmas: reduce write amplification/lock pain.
+    # Directory browsing does frequent reads while sessions append messages.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+    except sqlite3.OperationalError:
+        # Best-effort; some environments may reject specific pragmas.
+        pass
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             name TEXT PRIMARY KEY,
@@ -362,7 +376,7 @@ def init_db() -> sqlite3.Connection:
             opencode_session_id TEXT,
             active_engine TEXT DEFAULT 'opencode',
             opencode_agent TEXT DEFAULT 'bridge',
-            model_id TEXT DEFAULT 'glm_vllm/glm-4.7-flash',
+            model_id TEXT DEFAULT 'glm_vllm/glm-4.7-flash-heretic.Q8_0.gguf',
             reasoning_mode TEXT DEFAULT 'high',
             tmux_name TEXT,
             created_at TEXT NOT NULL,
@@ -370,6 +384,15 @@ def init_db() -> sqlite3.Connection:
             status TEXT DEFAULT 'active'
         )
     """)
+
+    # Indexes: session listing is on the hot path (directory/disco browsing).
+    # Without these, SQLite scans/sorts the whole table on each request.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_status_last_active ON sessions(status, last_active DESC)"
+    )
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ralph_loops (
@@ -400,12 +423,16 @@ def init_db() -> sqlite3.Connection:
         )
     """)
 
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_messages_session_name_id ON session_messages(session_name, id DESC)"
+    )
+
     # Migrations for existing databases
     migrations = [
         ("opencode_session_id", "TEXT"),
         ("active_engine", "TEXT DEFAULT 'opencode'"),
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
-        ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_GPT}'"),
+        ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_DEFAULT}'"),
         ("reasoning_mode", "TEXT DEFAULT 'high'"),
     ]
     for col_name, col_type in migrations:

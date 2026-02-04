@@ -104,7 +104,9 @@ class OpenCodeRunner(BaseRunner):
 
         self._question_handler: _QuestionHandler
         if self._config.question_callback:
-            self._question_handler = _CallbackQuestionHandler(self._config.question_callback)
+            self._question_handler = _CallbackQuestionHandler(
+                self._config.question_callback
+            )
         else:
             self._question_handler = _RejectQuestionHandler()
 
@@ -207,6 +209,12 @@ class OpenCodeRunner(BaseRunner):
                     handle_question=_handle_question,
                 ):
                     yield event
+
+                # If cancellation was requested, don't wait on the message POST or poll.
+                # Cleanup will cancel in-flight tasks and send an abort to the server.
+                if self._transport.cancelled:
+                    yield ("cancelled", None)
+                    return
 
                 if not state.saw_result and not state.saw_error:
                     result = await self._transport.finalize(

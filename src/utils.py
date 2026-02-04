@@ -123,7 +123,7 @@ def get_xmpp_config() -> dict:
                 "password": os.getenv("OC_PASSWORD", ""),
                 "engine": "opencode",
                 "agent": "bridge",
-                "label": "GLM 4.7",
+                "label": "GLM 4.7 Heretic",
             },
             "oc-gpt": {
                 "jid": os.getenv("OC_GPT_JID", f"oc-gpt@{domain}"),
@@ -303,7 +303,9 @@ class BaseXMPPBot(ClientXMPP):
             else:
                 log.exception("Unhandled error")
             try:
-                self.send_reply(self._format_exception_for_user(exc), recipient=recipient)
+                self.send_reply(
+                    self._format_exception_for_user(exc), recipient=recipient
+                )
             except Exception:
                 pass
             return None
@@ -317,5 +319,7 @@ class BaseXMPPBot(ClientXMPP):
     ) -> asyncio.Task:
         """Create a task that reports exceptions to the user."""
 
-        task = asyncio.create_task(self.guard(coro, recipient=recipient, context=context))
+        task = asyncio.create_task(
+            self.guard(coro, recipient=recipient, context=context)
+        )
         return task

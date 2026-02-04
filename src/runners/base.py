@@ -31,6 +31,13 @@ class RunState:
     # Track roles by message ID so we can ignore user echoes.
     message_roles: Dict[str, str] = field(default_factory=dict)
 
+    # Track seen tool IDs to deduplicate SSE updates for the same tool call.
+    seen_tool_ids: set = field(default_factory=set)
+
+    # For streaming tool events, input/args can arrive in a later update for the
+    # same tool ID. Track which tool IDs we've already logged input for.
+    tool_input_logged_ids: set = field(default_factory=set)
+
     @property
     def duration_s(self) -> float:
         return (datetime.now() - self.start_time).total_seconds()
@@ -62,8 +69,12 @@ class BaseRunner:
 
     def _log_prompt(self, prompt: str) -> None:
         """Log the prompt to the output file."""
-        self._log_to_file(f"\n[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n")
+        self._log_to_file(
+            f"\n[{datetime.now().strftime('%H:%M:%S')}] Prompt: {prompt}\n"
+        )
 
     def _log_response(self, text: str) -> None:
         """Log a response to the output file."""
-        self._log_to_file(f"\n[{datetime.now().strftime('%H:%M:%S')}] Response:\n{text}\n")
+        self._log_to_file(
+            f"\n[{datetime.now().strftime('%H:%M:%S')}] Response:\n{text}\n"
+        )

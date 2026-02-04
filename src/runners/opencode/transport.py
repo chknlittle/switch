@@ -35,7 +35,9 @@ class OpenCodeTransport:
             and not self._client_session.closed
         ):
             self._abort_task = asyncio.create_task(
-                self._client.abort_session(self._client_session, self._active_session_id)
+                self._client.abort_session(
+                    self._client_session, self._active_session_id
+                )
             )
 
     async def wait_cancelled(self) -> None:
@@ -124,21 +126,32 @@ class OpenCodeTransport:
 
         if sse_task:
             sse_task.cancel()
-            await sse_task
+            try:
+                await sse_task
+            except asyncio.CancelledError:
+                pass
 
         if message_task and not message_task.done():
             message_task.cancel()
-            await message_task
+            try:
+                await message_task
+            except asyncio.CancelledError:
+                pass
 
         if (
             self._client_session
             and self._active_session_id
             and not self._client_session.closed
         ):
-            await self._client.abort_session(self._client_session, self._active_session_id)
+            await self._client.abort_session(
+                self._client_session, self._active_session_id
+            )
 
         if self._abort_task and not self._abort_task.done():
-            await self._abort_task
+            try:
+                await self._abort_task
+            except asyncio.CancelledError:
+                pass
 
         self._client_session = None
         self._abort_task = None

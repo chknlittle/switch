@@ -3,11 +3,30 @@
 .opencode/node_modules/
 .opencode/package.json
 .opencode/bun.lock
+# Local OpenCode config (commit example instead)
+.opencode/opencode.json
+.opencode/opencode.jsonc
 output/
 sessions.db
+sessions.db-wal
+sessions.db-shm
+sessions.db-journal
 tmp/
 uploads/*
 !uploads/.gitkeep
+
+# Certificates / private keys
+certs/
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.csr
 
 # Legacy/local artifacts (avoid confusing shadow state under src/)
 src/sessions.db

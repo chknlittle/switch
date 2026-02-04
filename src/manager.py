@@ -60,7 +60,9 @@ class SessionManager:
         self.directory = directory
         log.info(f"Started directory service: {jid} (pubsub={pubsub_service_jid})")
 
-    def notify_directory_sessions_changed(self, dispatcher_jid: str | None = None) -> None:
+    def notify_directory_sessions_changed(
+        self, dispatcher_jid: str | None = None
+    ) -> None:
         """Best-effort pubsub ping so clients refresh hierarchy."""
         if not self.directory:
             return

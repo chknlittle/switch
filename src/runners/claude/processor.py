@@ -70,20 +70,60 @@ class ClaudeEventProcessor:
 
         tool_id = str(name).strip().lower() if name else "?"
 
+        def _clean_label(value: object, *, max_len: int = 180) -> str | None:
+            if not isinstance(value, str):
+                return None
+            s = " ".join(value.split())
+            if not s:
+                return None
+            if len(s) > max_len:
+                return s[: max_len - 3] + "..."
+            return s
+
+        title = (
+            _clean_label(tool_input.get("title"))
+            if isinstance(tool_input, dict)
+            else None
+        )
+        description = (
+            _clean_label(tool_input.get("description"))
+            if isinstance(tool_input, dict)
+            else None
+        )
+        if title and description and title == description:
+            description = None
+
+        extra_bits: list[str] = []
+        if title:
+            extra_bits.append(title)
+        if description:
+            extra_bits.append(description)
+
         if name == "Bash":
             preview = ""
             if isinstance(tool_input, dict):
                 preview = str(tool_input.get("command", "") or "")
-            preview = preview.strip().replace("\n", " ")[:60]
-            desc = f"[tool:{tool_id} {preview}]" if preview else f"[tool:{tool_id}]"
+            preview = _clean_label(preview, max_len=80) or ""
+            if preview:
+                extra_bits = [preview] + extra_bits
+            extra = " | ".join(extra_bits)
+            desc = f"[tool:{tool_id} {extra}]" if extra else f"[tool:{tool_id}]"
         elif name in ("Read", "Write", "Edit"):
             path = ""
             if isinstance(tool_input, dict):
                 path = str(tool_input.get("file_path", "") or "")
             leaf = Path(path).name if path else ""
-            desc = f"[tool:{tool_id} {leaf}]" if leaf else f"[tool:{tool_id}]"
+            if leaf:
+                extra_bits = [leaf] + extra_bits
+            extra = " | ".join(extra_bits)
+            desc = f"[tool:{tool_id} {extra}]" if extra else f"[tool:{tool_id}]"
         else:
-            desc = f"[tool:{tool_id}]" if tool_id else "[tool:?]"
+            extra = " | ".join(extra_bits)
+            desc = (
+                f"[tool:{tool_id} {extra}]"
+                if (tool_id and extra)
+                else (f"[tool:{tool_id}]" if tool_id else "[tool:?]")
+            )
 
         if should_log_tool_input():
             formatted = format_tool_input_preview(tool_id, tool_input)

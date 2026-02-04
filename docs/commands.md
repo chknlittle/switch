@@ -53,6 +53,8 @@ Example: `!git status`, `!pwd`, `!ls -la`
 | `/ralph <prompt> --max N` | Same as above |
 | `/ralph <prompt> --done "promise"` | Stop when AI outputs `<promise>...</promise>` |
 | `/ralph <prompt> --wait M` | Wait M minutes between iterations |
+| `/ralph <prompt> --look` | Prompt-only mode: each iteration runs with no prior context |
+| `/ralph-look <prompt>` | Alias for `/ralph <prompt> --look` |
 | `/ralph-status` | Check loop progress |
 | `/ralph-cancel` | Stop after current iteration |
 

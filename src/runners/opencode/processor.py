@@ -66,7 +66,12 @@ class OpenCodeEventProcessor:
     def _handle_message_meta(self, event: dict, state: RunState) -> Event | None:
         message_id = event.get("messageID")
         role = event.get("role")
-        if isinstance(message_id, str) and message_id and isinstance(role, str) and role:
+        if (
+            isinstance(message_id, str)
+            and message_id
+            and isinstance(role, str)
+            and role
+        ):
             state.message_roles[message_id] = role
         return None
 
@@ -79,23 +84,110 @@ class OpenCodeEventProcessor:
         if not tool:
             return None
 
-        state.tool_count += 1
+        def _clean_label(value: object, *, max_len: int = 180) -> str | None:
+            if not isinstance(value, str):
+                return None
+            s = " ".join(value.split())
+            if not s:
+                return None
+            if len(s) > max_len:
+                return s[: max_len - 3] + "..."
+            return s
+
+        def _extract_tool_input(
+            part_obj: dict, tool_state_obj: object
+        ) -> object | None:
+            raw_input: object | None = None
+            if isinstance(tool_state_obj, dict):
+                raw_input = tool_state_obj.get("input") or tool_state_obj.get("args")
+            if raw_input is None:
+                raw_input = part_obj.get("input") or part_obj.get("args")
+            return raw_input
+
+        def _extract_desc_parts(
+            *,
+            part_obj: dict,
+            tool_state_obj: object,
+            tool_input_obj: object | None,
+        ) -> tuple[str | None, str | None]:
+            title = None
+            description = None
+
+            if isinstance(tool_state_obj, dict):
+                title = _clean_label(tool_state_obj.get("title"))
+                description = _clean_label(tool_state_obj.get("description"))
+
+            if description is None and isinstance(part_obj, dict):
+                description = _clean_label(part_obj.get("description"))
+
+            # Tool schemas commonly include a per-call description inside args/input.
+            if isinstance(tool_input_obj, dict):
+                if title is None:
+                    title = _clean_label(tool_input_obj.get("title"))
+                if description is None:
+                    description = _clean_label(tool_input_obj.get("description"))
+
+            # Avoid duplicating identical strings.
+            if title and description and title == description:
+                description = None
+
+            return title, description
+
+        # Deduplicate: SSE can send multiple updates for the same tool call.
+        # Tool input/args often arrives on a later update, so allow a follow-up
+        # event to log input even if we already logged the tool header.
+        tool_id = part.get("id") or part.get("toolUseId") or part.get("callID")
+        if not tool_id:
+            msg_id = part.get("messageID", "")
+            idx = part.get("index", "")
+            if msg_id or idx:
+                tool_id = f"{msg_id}:{idx}"
+
         tool_state = part.get("state", {})
-        title = tool_state.get("title") if isinstance(tool_state, dict) else None
-        desc = f"[tool:{tool} {title}]" if title else f"[tool:{tool}]"
+        tool_input = _extract_tool_input(part, tool_state)
+        has_input = tool_input is not None
+
+        if tool_id and tool_id in state.seen_tool_ids:
+            if (
+                has_input
+                and should_log_tool_input()
+                and tool_id not in state.tool_input_logged_ids
+            ):
+                formatted = format_tool_input_preview(str(tool), tool_input)
+                if formatted:
+                    max_len = tool_input_max_len()
+                    formatted = formatted[:max_len]
+                    self._log_to_file(f"  input: {formatted}\n")
+                    state.tool_input_logged_ids.add(tool_id)
+                    return ("tool", f"[tool:{tool}] input: {formatted}")
+            return None
+
+        if tool_id:
+            state.seen_tool_ids.add(tool_id)
+
+        state.tool_count += 1
+        title, description = _extract_desc_parts(
+            part_obj=part,
+            tool_state_obj=tool_state,
+            tool_input_obj=tool_input,
+        )
+
+        extra_bits: list[str] = []
+        if title:
+            extra_bits.append(title)
+        if description:
+            extra_bits.append(description)
+        extra = " | ".join(extra_bits)
+        desc = f"[tool:{tool} {extra}]" if extra else f"[tool:{tool}]"
 
         if should_log_tool_input():
-            raw_input: object | None = None
-            if isinstance(tool_state, dict):
-                raw_input = tool_state.get("input") or tool_state.get("args")
-            if raw_input is None:
-                raw_input = part.get("input") or part.get("args")
-
-            formatted = format_tool_input_preview(str(tool), raw_input)
+            formatted = format_tool_input_preview(str(tool), tool_input)
             if formatted:
                 max_len = tool_input_max_len()
                 formatted = formatted[:max_len]
                 self._log_to_file(f"{desc}\n  input: {formatted}\n")
+                if tool_id:
+                    state.tool_input_logged_ids.add(tool_id)
                 return ("tool", f"{desc} input: {formatted}")
 
         self._log_to_file(f"{desc}\n")

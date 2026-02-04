@@ -7,7 +7,7 @@ chat contact in the client.
 
 Orchestrator contacts:
 - cc@... - Claude Code sessions
-- oc@... - OpenCode with GLM 4.7 (local)
+- oc@... - OpenCode with GLM 4.7 Heretic (local)
 - oc-gpt@... - OpenCode with GPT 5.2
 - oc-glm-zen@... - OpenCode with GLM 4.7 (Zen)
 - oc-gpt-or@... - OpenCode with GPT 5.2 (OpenRouter)
@@ -111,7 +111,9 @@ async def main():
                 pubsub_service_jid=PUBSUB_SERVICE,
             )
         else:
-            log.info("Directory service disabled (missing SWITCH_DIRECTORY_JID/PASSWORD)")
+            log.info(
+                "Directory service disabled (missing SWITCH_DIRECTORY_JID/PASSWORD)"
+            )
     except Exception:
         log.exception("Failed to start directory service")
     await manager.restore_sessions()
