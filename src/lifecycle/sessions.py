@@ -129,6 +129,7 @@ async def create_session(
         model_id=effective_model,
         opencode_agent=opencode_agent or "bridge",
         active_engine=engine,
+        dispatcher_jid=dispatcher_jid,
     )
 
     bot = await manager.start_session_bot(name, jid, password)

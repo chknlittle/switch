@@ -152,14 +152,21 @@ class DirectoryBot(BaseXMPPBot):
         # If we can map the group to a dispatcher, filter to that dispatcher.
         if key:
             cfg = self.dispatchers_config.get(key) or {}
+            dispatcher_jid = cfg.get("jid")
             engine = cfg.get("engine")
             agent = cfg.get("agent")
             filtered = []
             for s in sessions:
-                if engine and s.active_engine != engine:
-                    continue
-                if engine == "opencode" and agent and s.opencode_agent != agent:
-                    continue
+                if s.dispatcher_jid:
+                    # Session knows which dispatcher spawned it — exact match.
+                    if str(JID(s.dispatcher_jid).bare) != str(JID(dispatcher_jid).bare):
+                        continue
+                else:
+                    # Legacy session without dispatcher_jid — fall back to heuristic.
+                    if engine and s.active_engine != engine:
+                        continue
+                    if engine == "opencode" and agent and s.opencode_agent != agent:
+                        continue
                 filtered.append(s)
             sessions = filtered
 

@@ -33,6 +33,7 @@ class Session:
     opencode_agent: str
     model_id: str
     reasoning_mode: str
+    dispatcher_jid: str | None
     tmux_name: str | None
     created_at: str
     last_active: str
@@ -85,6 +86,7 @@ class SessionRepository:
             opencode_agent=row["opencode_agent"] or "bridge",
             model_id=row["model_id"] or OPENCODE_MODEL_DEFAULT,
             reasoning_mode=row["reasoning_mode"] or "high",
+            dispatcher_jid=row["dispatcher_jid"] if "dispatcher_jid" in row.keys() else None,
             tmux_name=row["tmux_name"],
             created_at=row["created_at"],
             last_active=row["last_active"],
@@ -142,13 +144,14 @@ class SessionRepository:
         opencode_agent: str = "bridge",
         active_engine: str = "opencode",
         reasoning_mode: str = "high",
+        dispatcher_jid: str | None = None,
     ) -> Session:
         now = datetime.now().isoformat()
         self.conn.execute(
             """INSERT INTO sessions
                (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                model_id, opencode_agent, active_engine, reasoning_mode)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                model_id, opencode_agent, active_engine, reasoning_mode, dispatcher_jid)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 xmpp_jid,
@@ -160,6 +163,7 @@ class SessionRepository:
                 opencode_agent,
                 active_engine,
                 reasoning_mode,
+                dispatcher_jid,
             ),
         )
         self.conn.commit()
@@ -434,6 +438,7 @@ def init_db() -> sqlite3.Connection:
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
         ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_DEFAULT}'"),
         ("reasoning_mode", "TEXT DEFAULT 'high'"),
+        ("dispatcher_jid", "TEXT"),
     ]
     for col_name, col_type in migrations:
         try:
