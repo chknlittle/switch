@@ -9,6 +9,7 @@ Orchestrator contacts:
 - cc@... - Claude Code sessions
 - oc@... - OpenCode with GLM 4.7 Heretic (local)
 - oc-gpt@... - OpenCode with GPT 5.2
+- oc-codex@... - OpenCode with Codex 5.3
 - oc-glm-zen@... - OpenCode with GLM 4.7 (Zen)
 - oc-gpt-or@... - OpenCode with GPT 5.2 (OpenRouter)
 

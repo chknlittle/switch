@@ -131,6 +131,7 @@ class SessionManager:
                 manager=self,
                 engine=cfg["engine"],
                 opencode_agent=cfg["agent"],
+                model_id=cfg.get("model_id"),
                 label=cfg["label"],
             )
             dispatcher.connect_to_server(self.xmpp_server)

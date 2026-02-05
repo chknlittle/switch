@@ -139,6 +139,16 @@ def get_xmpp_config() -> dict:
                 "agent": "bridge-gpt",
                 "label": "GPT 5.2",
             },
+            "oc-codex": {
+                "jid": os.getenv("OC_CODEX_JID", f"oc-codex@{domain}"),
+                "password": os.getenv(
+                    "OC_CODEX_PASSWORD", os.getenv("XMPP_PASSWORD", "")
+                ),
+                "engine": "opencode",
+                "agent": "bridge-gpt",
+                "model_id": "openai/codex-5.3",
+                "label": "Codex 5.3",
+            },
             "oc-glm-zen": {
                 "jid": os.getenv("OC_GLM_ZEN_JID", f"oc-glm-zen@{domain}"),
                 "password": os.getenv(

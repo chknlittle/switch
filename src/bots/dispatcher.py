@@ -27,6 +27,7 @@ class DispatcherBot(BaseXMPPBot):
     - cc: Claude Code
     - oc: OpenCode with GLM 4.7 Heretic (bridge agent)
     - oc-gpt: OpenCode with GPT 5.2 (bridge-gpt agent)
+    - oc-codex: OpenCode with Codex 5.3 (bridge-gpt agent + model override)
     - oc-glm-zen: OpenCode with GLM 4.7 via Zen (bridge-zen agent)
     - oc-gpt-or: OpenCode with GPT 5.2 via OpenRouter (bridge-gpt-or agent)
     - oc-kimi-coding: OpenCode with Kimi K2.5 via Kimi for Coding (bridge-kimi-coding agent)
@@ -45,6 +46,7 @@ class DispatcherBot(BaseXMPPBot):
         *,
         engine: str = "opencode",
         opencode_agent: str | None = "bridge",
+        model_id: str | None = None,
         label: str = "GLM 4.7 Heretic",
     ):
         super().__init__(jid, password)
@@ -60,6 +62,7 @@ class DispatcherBot(BaseXMPPBot):
         self.manager: SessionManager | None = manager
         self.engine = engine
         self.opencode_agent = opencode_agent
+        self.model_id = model_id
         self.label = label
 
         self.add_event_handler("session_start", self.on_start)
@@ -254,6 +257,7 @@ class DispatcherBot(BaseXMPPBot):
             "  cc@ - Claude Code\n"
             "  oc@ - OpenCode (GLM 4.7 Heretic)\n"
             "  oc-gpt@ - OpenCode (GPT 5.2)\n"
+            "  oc-codex@ - OpenCode (Codex 5.3)\n"
             "  oc-glm-zen@ - OpenCode (GLM 4.7 Zen)\n"
             "  oc-gpt-or@ - OpenCode (GPT 5.2 OpenRouter)\n\n"
             "Commands:\n"
@@ -320,6 +324,7 @@ class DispatcherBot(BaseXMPPBot):
                 "",
                 engine=self.engine,
                 opencode_agent=self.opencode_agent,
+                model_id=self.model_id,
                 label=self.label,
                 name_hint="ralph",
                 announce="Ralph session '{name}' ({label}). Starting loop...",
@@ -380,6 +385,7 @@ class DispatcherBot(BaseXMPPBot):
             message or first_message,
             engine=self.engine,
             opencode_agent=self.opencode_agent,
+            model_id=self.model_id,
             label=self.label,
             on_reserved=lambda n: self.send_reply(
                 f"Creating: {n} ({self.label})...", recipient=self.xmpp_recipient

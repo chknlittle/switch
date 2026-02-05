@@ -9,6 +9,7 @@ OPENCODE_MODEL_DEFAULT = os.getenv(
     "OPENCODE_MODEL_DEFAULT", "glm_vllm/glm-4.7-flash-heretic.Q8_0.gguf"
 )
 OPENCODE_MODEL_GPT = "openai/gpt-5.2"
+OPENCODE_MODEL_CODEX = "openai/codex-5.3"
 OPENCODE_MODEL_ZEN = "opencode/glm-4.7"
 OPENCODE_MODEL_GPT_OR = "openrouter/openai/gpt-5.2"
 OPENCODE_MODEL_KIMI_CODING = "kimi-for-coding/kimi-k2.5"
@@ -44,6 +45,8 @@ def normalize_engine(engine: str) -> str | None:
 def opencode_model_for_agent(agent: str | None) -> str:
     if agent == "bridge-gpt":
         return OPENCODE_MODEL_GPT
+    if agent == "bridge-codex":
+        return OPENCODE_MODEL_CODEX
     if agent == "bridge-zen":
         return OPENCODE_MODEL_ZEN
     if agent == "bridge-gpt-or":
