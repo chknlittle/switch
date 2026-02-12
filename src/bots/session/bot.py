@@ -34,6 +34,7 @@ from src.bots.session.inbound import (
     normalize_leading_at,
     strip_urls_from_body,
 )
+from src.bots.session.xhtml import build_xhtml_message
 from src.bots.session.typing import TypingIndicator
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
@@ -307,6 +308,10 @@ class SessionBot(BaseXMPPBot):
             msg = self.make_message(mto=target, mbody=text, mtype="chat")
             msg["chat_state"] = "active"
 
+            rich = build_xhtml_message(text)
+            if rich is not None:
+                msg.xml.append(rich)
+
             if meta_type:
                 meta = build_message_meta(
                     meta_type,
@@ -327,6 +332,10 @@ class SessionBot(BaseXMPPBot):
             body = header + part + footer if total > 1 else part
             msg = self.make_message(mto=target, mbody=body, mtype="chat")
             msg["chat_state"] = "active" if i == total else "composing"
+
+            rich = build_xhtml_message(body)
+            if rich is not None:
+                msg.xml.append(rich)
 
             if meta_type:
                 meta = build_message_meta(
