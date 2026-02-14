@@ -40,7 +40,7 @@
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge",
-    "model_id": "glm_vllm/glm-4.7-flash-heretic.Q8_0.gguf",
+    "model_id": "glm_vllm/glm-4.7-flash",
     "label": "GLM 4.7 Heretic"
   },
   {

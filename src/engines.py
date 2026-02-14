@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 
 OPENCODE_MODEL_DEFAULT = os.getenv(
-    "OPENCODE_MODEL_DEFAULT", "glm_vllm/glm-4.7-flash-heretic.Q8_0.gguf"
+    "OPENCODE_MODEL_DEFAULT", "glm_vllm/glm-4.7-flash"
 )
 OPENCODE_MODEL_GPT = os.getenv("OPENCODE_MODEL_GPT", "openai/gpt-5.2")
 OPENCODE_MODEL_CODEX = os.getenv("OPENCODE_MODEL_CODEX", "openai/gpt-5.3-codex")
