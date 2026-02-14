@@ -363,6 +363,14 @@ class SessionBot(BaseXMPPBot):
             tool = inner.split(maxsplit=1)[0].strip()
             return tool or None
 
+        # OpenCode tool-result summaries look like: "[tool-result:bash ...]".
+        if summary.startswith("[tool-result:"):
+            end = summary.find("]")
+            head = summary[:end] if end != -1 else summary
+            inner = head[len("[tool-result:") :]
+            tool = inner.split(maxsplit=1)[0].strip()
+            return tool or None
+
         # Claude tool summaries look like: "[Bash: ...]" / "[Read: ...]".
         if summary.startswith("[") and ":" in summary:
             name = summary[1:].split(":", 1)[0].strip()

@@ -38,6 +38,14 @@ class RunState:
     # same tool ID. Track which tool IDs we've already logged input for.
     tool_input_logged_ids: set = field(default_factory=set)
 
+    # Track tool IDs whose plain headers were later upgraded with details
+    # (e.g. command preview arriving in a follow-up SSE update).
+    tool_header_upgraded_ids: set = field(default_factory=set)
+
+    # Track seen tool-result IDs to avoid duplicate result summaries when the
+    # server emits multiple updates for the same finished tool call.
+    tool_result_seen_ids: set = field(default_factory=set)
+
     @property
     def duration_s(self) -> float:
         return (datetime.now() - self.start_time).total_seconds()

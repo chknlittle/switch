@@ -132,6 +132,14 @@ class OpenCodeEventProcessor:
             title = None
             description = None
 
+            def _is_meaningful_preview(value: str | None) -> bool:
+                if not value:
+                    return False
+                v = value.strip()
+                if not v:
+                    return False
+                return v not in {"{}", "[]", '""', "null", "None"}
+
             if isinstance(tool_state_obj, dict):
                 title = _clean_label(tool_state_obj.get("title"))
                 description = _clean_label(tool_state_obj.get("description"))
@@ -160,7 +168,8 @@ class OpenCodeEventProcessor:
             # progress stays informative even when input logging is disabled.
             if title is None and tool_input_obj is not None:
                 preview = format_tool_input_preview(str(tool), tool_input_obj)
-                title = _clean_label(preview, max_len=100)
+                if _is_meaningful_preview(preview):
+                    title = _clean_label(preview, max_len=100)
 
             # Avoid duplicating identical strings.
             if title and description and title == description:
@@ -182,25 +191,6 @@ class OpenCodeEventProcessor:
         tool_input = _extract_tool_input(part, tool_state)
         has_input = tool_input is not None
 
-        if tool_id and tool_id in state.seen_tool_ids:
-            if (
-                has_input
-                and should_log_tool_input()
-                and tool_id not in state.tool_input_logged_ids
-            ):
-                formatted = format_tool_input_preview(str(tool), tool_input)
-                if formatted:
-                    max_len = tool_input_max_len()
-                    formatted = formatted[:max_len]
-                    self._log_to_file(f"  input: {formatted}\n")
-                    state.tool_input_logged_ids.add(tool_id)
-                    return ("tool", f"[tool:{tool}] input: {formatted}")
-            return None
-
-        if tool_id:
-            state.seen_tool_ids.add(tool_id)
-
-        state.tool_count += 1
         title, description = _extract_desc_parts(
             part_obj=part,
             tool_state_obj=tool_state,
@@ -214,6 +204,39 @@ class OpenCodeEventProcessor:
             extra_bits.append(description)
         extra = " | ".join(extra_bits)
         desc = f"[tool:{tool} {extra}]" if extra else f"[tool:{tool}]"
+        has_rich_header = bool(extra)
+
+        if tool_id and tool_id in state.seen_tool_ids:
+            if (
+                has_input
+                and should_log_tool_input()
+                and tool_id not in state.tool_input_logged_ids
+            ):
+                formatted = format_tool_input_preview(str(tool), tool_input)
+                if formatted:
+                    max_len = tool_input_max_len()
+                    formatted = formatted[:max_len]
+                    self._log_to_file(f"  input: {formatted}\n")
+                    state.tool_input_logged_ids.add(tool_id)
+                    return ("tool", f"[tool:{tool}] input: {formatted}")
+
+            # If a follow-up SSE update finally contains useful title/command
+            # info, emit one upgraded header even when input logging is off.
+            if (
+                has_rich_header
+                and tool_id not in state.tool_header_upgraded_ids
+            ):
+                self._log_to_file(f"{desc}\n")
+                state.tool_header_upgraded_ids.add(tool_id)
+                return ("tool", desc)
+            return None
+
+        if tool_id:
+            state.seen_tool_ids.add(tool_id)
+
+        state.tool_count += 1
+        if tool_id and has_rich_header:
+            state.tool_header_upgraded_ids.add(tool_id)
 
         if should_log_tool_input():
             formatted = format_tool_input_preview(str(tool), tool_input)
@@ -227,6 +250,77 @@ class OpenCodeEventProcessor:
 
         self._log_to_file(f"{desc}\n")
         return ("tool", desc)
+
+    def _handle_tool_result(self, event: dict, state: RunState) -> Event | None:
+        part = event.get("part", {})
+        if not isinstance(part, dict):
+            return None
+
+        tool = part.get("tool") or part.get("name") or "tool"
+        tool_str = str(tool)
+
+        tool_id = part.get("id") or part.get("toolUseId") or part.get("callID")
+        if not tool_id:
+            msg_id = part.get("messageID", "")
+            idx = part.get("index", "")
+            if msg_id or idx:
+                tool_id = f"{msg_id}:{idx}:result"
+
+        if tool_id and tool_id in state.tool_result_seen_ids:
+            return None
+        if tool_id:
+            state.tool_result_seen_ids.add(tool_id)
+
+        def _pick(obj: object, keys: tuple[str, ...]) -> object | None:
+            if not isinstance(obj, dict):
+                return None
+            for key in keys:
+                value = obj.get(key)
+                if value is not None:
+                    return value
+            return None
+
+        state_obj = part.get("state")
+
+        exit_code = _pick(part, ("exitCode", "exit_code", "code"))
+        if exit_code is None:
+            exit_code = _pick(state_obj, ("exitCode", "exit_code", "code"))
+
+        output = _pick(part, ("output", "stdout", "stderr", "result", "text"))
+        if output is None:
+            output = _pick(
+                state_obj,
+                (
+                    "output",
+                    "stdout",
+                    "stderr",
+                    "result",
+                    "response",
+                    "text",
+                    "error",
+                ),
+            )
+
+        pieces: list[str] = []
+        if exit_code is not None:
+            pieces.append(f"exit={exit_code}")
+
+        if isinstance(output, str):
+            compact = " ".join(output.split())
+            if compact:
+                if len(compact) > 180:
+                    compact = compact[:177] + "..."
+                pieces.append(compact)
+
+        if not pieces:
+            status = _pick(part, ("status",)) or _pick(state_obj, ("status",))
+            if isinstance(status, str) and status.strip():
+                pieces.append(status.strip())
+
+        suffix = f" {' | '.join(pieces)}" if pieces else ""
+        desc = f"[tool-result:{tool_str}{suffix}]"
+        self._log_to_file(f"{desc}\n")
+        return ("tool_result", desc)
 
     def _handle_step_finish(self, event: dict, state: RunState) -> Event | None:
         part = event.get("part", {})
@@ -361,6 +455,8 @@ class OpenCodeEventProcessor:
             return self._handle_text(event, state)
         if event_type == "tool_use":
             return self._handle_tool_use(event, state)
+        if event_type == "tool_result":
+            return self._handle_tool_result(event, state)
         if event_type == "step_finish":
             return self._handle_step_finish(event, state)
         if event_type == "error":

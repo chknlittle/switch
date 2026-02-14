@@ -761,6 +761,14 @@ class SessionRuntime:
                                 ),
                             )
                         )
+                elif event_type == "tool_result" and isinstance(content, str):
+                    await self._emit(
+                        OutboundMessage(
+                            f"... {content}",
+                            meta_type="tool-result",
+                            meta_tool=self._infer_meta_tool_from_summary(content),
+                        )
+                    )
                 elif event_type == "result" and isinstance(content, dict):
                     cost = content.get("cost_usd")
                     if isinstance(cost, (int, float)):
@@ -884,6 +892,14 @@ class SessionRuntime:
                             ),
                         )
                     )
+            elif event_type == "tool_result" and isinstance(content, str):
+                await self._emit(
+                    OutboundMessage(
+                        f"... {content}",
+                        meta_type="tool-result",
+                        meta_tool=self._infer_meta_tool_from_summary(content),
+                    )
+                )
             elif event_type == "question" and isinstance(content, Question):
                 # The runner handles question flow via the callback.
                 pass

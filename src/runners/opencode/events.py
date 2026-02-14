@@ -109,6 +109,15 @@ def coerce_event(payload: dict) -> dict | None:
                 return {"type": "text", "part": {"text": part.get("text", "")}}
             if part_type in {"tool", "tool_use"}:
                 return {"type": "tool_use", "part": part}
+            if part_type in {
+                "tool_result",
+                "tool-result",
+                "tool.output",
+                "tool_output",
+                "tool.response",
+                "tool_response",
+            }:
+                return {"type": "tool_result", "part": part}
             if part_type in {"question", "question.asked"}:
                 merged = {"type": "question.asked"}
                 merged.update(part)
@@ -116,7 +125,18 @@ def coerce_event(payload: dict) -> dict | None:
         if event_type in {"error", "session.error"}:
             return {"type": "error", **props}
 
-    if event_type in {"step_start", "step_finish", "text", "tool_use", "error"}:
+    if event_type in {
+        "step_start",
+        "step_finish",
+        "text",
+        "tool_use",
+        "tool_result",
+        "tool-result",
+        "error",
+    }:
+        if event_type == "tool-result":
+            payload = dict(payload)
+            payload["type"] = "tool_result"
         return payload
 
     return None
