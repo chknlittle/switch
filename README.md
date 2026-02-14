@@ -208,7 +208,7 @@ Switch sends an optional `<meta xmlns="urn:switch:message-meta" .../>` element o
 Used today by `switch-mac-os`:
 
 - `tool` / `tool-result`: monospace blocks (tool name badge)
-- `run-stats`: model + token/cost/duration footer
+- `run-stats`: model + token/cost/duration footer (+ normalized `tps` in `tok/s`)
 - `question`: interactive question cards
 - `attachment`: image/file attachment cards
 

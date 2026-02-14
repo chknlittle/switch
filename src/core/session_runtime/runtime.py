@@ -120,6 +120,107 @@ class SessionRuntime:
             return
         self._last_remote_session_id[engine] = session_id
 
+    @staticmethod
+    def _as_non_negative_float(value: object) -> float | None:
+        if not isinstance(value, (int, float)):
+            return None
+        v = float(value)
+        if v < 0:
+            return None
+        return v
+
+    @staticmethod
+    def _as_non_negative_int(value: object) -> int | None:
+        if not isinstance(value, (int, float)):
+            return None
+        v = int(value)
+        if v < 0:
+            return None
+        return v
+
+    @staticmethod
+    def _safe_tps(tokens: int | float | None, duration_s: float | None) -> float | None:
+        if duration_s is None or duration_s <= 0:
+            return None
+        if not isinstance(tokens, (int, float)):
+            return None
+        t = float(tokens)
+        if t <= 0:
+            return None
+        return t / duration_s
+
+    def _augment_tps_stats(self, engine: str, stats: dict[str, object]) -> None:
+        """Attach normalized throughput fields to run stats.
+
+        Units are always tokens per second (tok/s) over wall-clock duration.
+        """
+        duration_s = self._as_non_negative_float(stats.get("duration_s"))
+        if duration_s is None or duration_s <= 0:
+            return
+
+        output_tokens = self._as_non_negative_int(stats.get("tokens_out")) or 0
+        reasoning_tokens = self._as_non_negative_int(stats.get("tokens_reasoning")) or 0
+        input_tokens = self._as_non_negative_int(stats.get("tokens_in")) or 0
+        cache_read_tokens = self._as_non_negative_int(stats.get("tokens_cache_read")) or 0
+        cache_write_tokens = self._as_non_negative_int(stats.get("tokens_cache_write")) or 0
+
+        total_tokens = stats.get("tokens_total")
+        total_tokens_i = int(total_tokens) if isinstance(total_tokens, (int, float)) else None
+
+        generated_tokens = output_tokens + reasoning_tokens
+
+        # Processed = all token categories seen by the backend this run.
+        processed_tokens = (
+            input_tokens
+            + output_tokens
+            + reasoning_tokens
+            + cache_read_tokens
+            + cache_write_tokens
+        )
+
+        if engine == "claude" and total_tokens_i is not None:
+            # Claude currently reports only an aggregate token total.
+            processed_tokens = total_tokens_i
+
+        tps_output = self._safe_tps(output_tokens, duration_s)
+        tps_generated = self._safe_tps(generated_tokens, duration_s)
+        tps_processed = self._safe_tps(processed_tokens, duration_s)
+        tps_total = self._safe_tps(total_tokens_i, duration_s)
+
+        # Canonical display TPS prioritizes generated tokens for reasoning models,
+        # then falls back to output-only, then aggregate/processed totals.
+        tps = None
+        tps_basis = None
+        for basis, value in (
+            ("generated", tps_generated),
+            ("output", tps_output),
+            ("total", tps_total),
+            ("processed", tps_processed),
+        ):
+            if value is not None:
+                tps = value
+                tps_basis = basis
+                break
+
+        if generated_tokens > 0:
+            stats["tokens_generated"] = generated_tokens
+        if processed_tokens > 0:
+            stats["tokens_processed"] = processed_tokens
+
+        if tps_output is not None:
+            stats["tps_output"] = tps_output
+        if tps_generated is not None:
+            stats["tps_generated"] = tps_generated
+        if tps_processed is not None:
+            stats["tps_processed"] = tps_processed
+        if tps_total is not None:
+            stats["tps_total"] = tps_total
+
+        if tps is not None and tps_basis is not None:
+            stats["tps"] = tps
+            stats["tps_basis"] = tps_basis
+            stats["tps_unit"] = "tok/s"
+
     def _extract_run_tokens(self, engine: str, stats: dict) -> int:
         """Best-effort: normalize a per-run token count across engines."""
         if engine == "claude":
@@ -946,9 +1047,18 @@ class SessionRuntime:
                 "tokens_cache_read",
                 "tokens_cache_write",
                 "tokens_total",
+                "tokens_generated",
+                "tokens_processed",
                 "context_window",
                 "cost_usd",
                 "duration_s",
+                "tps",
+                "tps_output",
+                "tps_generated",
+                "tps_processed",
+                "tps_total",
+                "tps_basis",
+                "tps_unit",
                 "summary",
             }
 
@@ -963,6 +1073,7 @@ class SessionRuntime:
 
             # Expose cumulative totals to the UI.
             stats = dict(stats)
+            self._augment_tps_stats(engine, stats)
             stats["session_tokens_total"] = int(
                 self._usage_tokens_total.get(engine, 0) or 0
             )
@@ -972,6 +1083,11 @@ class SessionRuntime:
 
             summary = stats.get("summary")
             if isinstance(summary, str) and summary:
+                tps = stats.get("tps")
+                basis = stats.get("tps_basis")
+                if isinstance(tps, (int, float)) and isinstance(basis, str):
+                    summary = summary.rstrip() + f" | {float(tps):.1f} tok/s ({basis})"
+
                 # Append a stable running token total.
                 stats["summary"] = (
                     summary.rstrip()
