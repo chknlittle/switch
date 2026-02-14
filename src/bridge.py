@@ -5,15 +5,9 @@ Switch - XMPP AI Assistant Bridge
 Each OpenCode/Claude session gets its own XMPP account, appearing as a separate
 chat contact in the client.
 
-Orchestrator contacts:
-- cc@... - Claude Code sessions
-- oc@... - OpenCode with GLM 4.7 Heretic (local)
-- oc-gpt@... - OpenCode with GPT 5.2
-- oc-codex@... - OpenCode with Codex 5.3
-- oc-glm-zen@... - OpenCode with GLM 4.7 (Zen)
-- oc-gpt-or@... - OpenCode with GPT 5.2 (OpenRouter)
+Dispatcher contacts are configured at runtime (supports 1..N dispatchers).
 
-Send any message to an orchestrator to create a new session.
+Send any message to a dispatcher to create a new session.
 Each session appears as its own contact (e.g., react-app@...).
 Reply directly to that contact to continue the conversation.
 """

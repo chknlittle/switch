@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine
 
 from src.db import SessionRepository
+from src.engines import OPENCODE_MODEL_DEFAULT
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.ralph import parse_ralph_command
 from src.runners import create_runner
@@ -226,7 +227,7 @@ class DispatcherBot(BaseXMPPBot):
             working_dir=working_dir,
             output_dir=Path(self.working_dir) / "output",
             opencode_config=OpenCodeConfig(
-                model="glm_vllm/glm-4.7-flash-heretic.Q8_0.gguf",
+                model=OPENCODE_MODEL_DEFAULT,
                 agent="bridge",
             ),
         )
@@ -253,13 +254,7 @@ class DispatcherBot(BaseXMPPBot):
     async def _cmd_help(self, _arg: str) -> None:
         self.send_reply(
             f"Send any message to start a new {self.label} session.\n\n"
-            "Orchestrators:\n"
-            "  cc@ - Claude Code\n"
-            "  oc@ - OpenCode (GLM 4.7 Heretic)\n"
-            "  oc-gpt@ - OpenCode (GPT 5.2)\n"
-            "  oc-codex@ - OpenCode (Codex 5.3)\n"
-            "  oc-glm-zen@ - OpenCode (GLM 4.7 Zen)\n"
-            "  oc-gpt-or@ - OpenCode (GPT 5.2 OpenRouter)\n\n"
+            "Dispatchers are configured by Switch and may vary per deployment.\n\n"
             "Commands:\n"
             "  /list - show sessions\n"
             "  /recent - recent with status\n"

@@ -127,6 +127,12 @@ class OpenCodeEventProcessor:
                 if description is None:
                     description = _clean_label(tool_input_obj.get("description"))
 
+                # Keep bash progress readable even when full tool-input logging is
+                # disabled. Show a short command preview in the tool header.
+                if str(tool) == "bash" and title is None:
+                    cmd = tool_input_obj.get("command")
+                    title = _clean_label(cmd, max_len=100)
+
             # Avoid duplicating identical strings.
             if title and description and title == description:
                 description = None

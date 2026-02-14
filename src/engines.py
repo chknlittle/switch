@@ -8,11 +8,13 @@ from dataclasses import dataclass
 OPENCODE_MODEL_DEFAULT = os.getenv(
     "OPENCODE_MODEL_DEFAULT", "glm_vllm/glm-4.7-flash-heretic.Q8_0.gguf"
 )
-OPENCODE_MODEL_GPT = "openai/gpt-5.2"
-OPENCODE_MODEL_CODEX = "openai/gpt-5.3-codex"
-OPENCODE_MODEL_ZEN = "opencode/glm-4.7"
-OPENCODE_MODEL_GPT_OR = "openrouter/openai/gpt-5.2"
-OPENCODE_MODEL_KIMI_CODING = "kimi-for-coding/kimi-k2.5"
+OPENCODE_MODEL_GPT = os.getenv("OPENCODE_MODEL_GPT", "openai/gpt-5.2")
+OPENCODE_MODEL_CODEX = os.getenv("OPENCODE_MODEL_CODEX", "openai/gpt-5.3-codex")
+OPENCODE_MODEL_ZEN = os.getenv("OPENCODE_MODEL_ZEN", "opencode/glm-4.7")
+OPENCODE_MODEL_GPT_OR = os.getenv("OPENCODE_MODEL_GPT_OR", "openrouter/openai/gpt-5.2")
+OPENCODE_MODEL_KIMI_CODING = os.getenv(
+    "OPENCODE_MODEL_KIMI_CODING", "kimi-for-coding/kimi-k2.5"
+)
 
 
 @dataclass(frozen=True)
