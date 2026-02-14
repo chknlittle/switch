@@ -2,7 +2,7 @@
   {
     "name": "acorn",
     "jid": "acorn@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
+    "password_env": "ACORN_PASSWORD",
     "engine": "external",
     "agent": null,
     "label": "Acorn",

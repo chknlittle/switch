@@ -99,9 +99,28 @@ class OpenCodeEventProcessor:
         ) -> object | None:
             raw_input: object | None = None
             if isinstance(tool_state_obj, dict):
-                raw_input = tool_state_obj.get("input") or tool_state_obj.get("args")
+                for key in ("input", "args", "arguments", "params"):
+                    value = tool_state_obj.get(key)
+                    if value is not None:
+                        raw_input = value
+                        break
+
+                # Some server builds expose bash command directly on state.
+                if raw_input is None and str(tool) == "bash":
+                    cmd = tool_state_obj.get("command")
+                    if isinstance(cmd, str) and cmd.strip():
+                        raw_input = {"command": cmd.strip()}
             if raw_input is None:
-                raw_input = part_obj.get("input") or part_obj.get("args")
+                for key in ("input", "args", "arguments", "params"):
+                    value = part_obj.get(key)
+                    if value is not None:
+                        raw_input = value
+                        break
+
+            if raw_input is None and str(tool) == "bash":
+                cmd = part_obj.get("command")
+                if isinstance(cmd, str) and cmd.strip():
+                    raw_input = {"command": cmd.strip()}
             return raw_input
 
         def _extract_desc_parts(
@@ -132,6 +151,16 @@ class OpenCodeEventProcessor:
                 if str(tool) == "bash" and title is None:
                     cmd = tool_input_obj.get("command")
                     title = _clean_label(cmd, max_len=100)
+
+            # Some servers send bash input as a plain string command.
+            if str(tool) == "bash" and title is None and isinstance(tool_input_obj, str):
+                title = _clean_label(tool_input_obj, max_len=100)
+
+            # Generic fallback: show a compact preview when available so tool
+            # progress stays informative even when input logging is disabled.
+            if title is None and tool_input_obj is not None:
+                preview = format_tool_input_preview(str(tool), tool_input_obj)
+                title = _clean_label(preview, max_len=100)
 
             # Avoid duplicating identical strings.
             if title and description and title == description:
