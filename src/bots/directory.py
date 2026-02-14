@@ -157,31 +157,47 @@ class DirectoryBot(BaseXMPPBot):
         ):
             sessions = self._active_sessions_cache
         else:
-            sessions = self.sessions.list_browsable(limit=self.ACTIVE_SESSIONS_LIMIT)
+            sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
             self._active_sessions_cache = sessions
             self._active_sessions_cache_ts = now
 
-        if key:
-            cfg = self.dispatchers_config.get(key) or {}
-            cfg_jid = cfg.get("jid")
-            filtered = []
-            for s in sessions:
-                if s.dispatcher_jid:
-                    # Session knows its dispatcher — exact match only.
-                    if str(JID(s.dispatcher_jid).bare) != str(JID(cfg_jid).bare):
-                        continue
-                # Sessions without dispatcher_jid are shown under all dispatchers
-                # (legacy data / reconstructed records).
-                filtered.append(s)
-            sessions = filtered
+        sessions = self._filter_by_dispatcher(sessions, key)
 
+        active_jids: set[str] = set()
         for s in sessions:
             try:
                 items.add_item(JID(s.xmpp_jid), name=s.name)
+                active_jids.add(str(JID(s.xmpp_jid).bare))
+            except Exception:
+                continue
+
+        # Also include up to 10 recent closed sessions.
+        closed = self.sessions.list_recent_closed(limit=10)
+        closed = self._filter_by_dispatcher(closed, key)
+        for s in closed:
+            try:
+                bare = str(JID(s.xmpp_jid).bare)
+                if bare in active_jids:
+                    continue
+                items.add_item(JID(s.xmpp_jid), node="closed", name=s.name)
             except Exception:
                 continue
 
         return items
+
+    def _filter_by_dispatcher(self, sessions: list, key: str | None) -> list:
+        """Filter sessions to those belonging to a dispatcher."""
+        if not key:
+            return sessions
+        cfg = self.dispatchers_config.get(key) or {}
+        cfg_jid = cfg.get("jid")
+        filtered = []
+        for s in sessions:
+            if s.dispatcher_jid:
+                if str(JID(s.dispatcher_jid).bare) != str(JID(cfg_jid).bare):
+                    continue
+            filtered.append(s)
+        return filtered
 
     def _items_groups(self, dispatcher_jid: str) -> DiscoItems:
         items = DiscoItems()
@@ -205,7 +221,7 @@ class DirectoryBot(BaseXMPPBot):
         ):
             sessions = self._active_sessions_cache
         else:
-            sessions = self.sessions.list_browsable(limit=self.ACTIVE_SESSIONS_LIMIT)
+            sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
             self._active_sessions_cache = sessions
             self._active_sessions_cache_ts = now
 
@@ -262,9 +278,11 @@ class DirectoryBot(BaseXMPPBot):
             payload.set("dispatcher", dispatcher_jid)
             for item_tuple in items_disco["items"]:
                 # items are (jid, node, name) tuples
-                jid_val, _, name_val = item_tuple
+                jid_val, node_val, name_val = item_tuple
                 session_el = ET.SubElement(payload, "session")
                 session_el.set("jid", str(jid_val))
+                if node_val == "closed":
+                    session_el.set("status", "closed")
                 if name_val:
                     session_el.set("name", name_val)
             pubsub = cast(Any, self["xep_0060"])

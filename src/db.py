@@ -134,10 +134,11 @@ class SessionRepository:
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
-    def list_browsable(self, limit: int = 200) -> list[Session]:
-        """List sessions for directory browsing (all statuses, most recent first)."""
+    def list_recent_closed(self, limit: int = 10) -> list[Session]:
+        """List most recently active closed sessions (for directory browsing)."""
         rows = self.conn.execute(
             """SELECT * FROM sessions
+               WHERE status = 'closed'
                ORDER BY last_active DESC
                LIMIT ?""",
             (limit,),
