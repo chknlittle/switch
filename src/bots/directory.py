@@ -193,9 +193,10 @@ class DirectoryBot(BaseXMPPBot):
         cfg_jid = cfg.get("jid")
         filtered = []
         for s in sessions:
-            if s.dispatcher_jid:
-                if str(JID(s.dispatcher_jid).bare) != str(JID(cfg_jid).bare):
-                    continue
+            if not s.dispatcher_jid:
+                continue
+            if str(JID(s.dispatcher_jid).bare) != str(JID(cfg_jid).bare):
+                continue
             filtered.append(s)
         return filtered
 
