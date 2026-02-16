@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from src.core.session_runtime import SessionRuntime
 from src.core.session_runtime.api import (
@@ -87,6 +87,9 @@ class SessionBot(BaseXMPPBot):
         self.ejabberd_ctl = ejabberd_ctl
         self.manager = manager
         self.runner: Runner | None = None
+        self.room_jid: str | None = None
+        self.room_nick: str = self.session_name
+        self.startup_error: str | None = None
         self.processing = False
         self.shutting_down = False
         self._typing = TypingIndicator(
@@ -105,6 +108,8 @@ class SessionBot(BaseXMPPBot):
         self.session: SessionPort = self._runtime
         self.attachment_store = AttachmentStore()
         self.commands = CommandHandler(self)
+
+        self.register_plugin("xep_0045")
 
         self.add_event_handler("session_start", self.on_start)
         self.add_event_handler("message", self.on_message)
@@ -267,6 +272,16 @@ class SessionBot(BaseXMPPBot):
         self.send_presence()
         await self.get_roster()
         await self["xep_0280"].enable()  # type: ignore[attr-defined,union-attr]
+        self._load_room_settings()
+        if self.room_jid:
+            joined = await self._join_collaboration_room()
+            if not joined:
+                if not self.startup_error:
+                    self.startup_error = f"failed to join room {self.room_jid}"
+                self.log.error("Startup aborted: %s", self.startup_error)
+                self.disconnect()
+                self.set_connected(False)
+                return
         self.log.info("Connected")
         self.set_connected(True)
 
@@ -307,10 +322,16 @@ class SessionBot(BaseXMPPBot):
         except ValueError:
             max_len = 3500
         max_len = max(500, min(max_len, 100000))
-        target = recipient or self.xmpp_recipient
+        target = recipient or self._default_reply_recipient()
+        is_room_target = bool(self.room_jid and target == self.room_jid)
         if len(text) <= max_len:
-            msg = self.make_message(mto=target, mbody=text, mtype="chat")
-            msg["chat_state"] = "active"
+            msg = self.make_message(
+                mto=target,
+                mbody=text,
+                mtype="groupchat" if is_room_target else "chat",
+            )
+            if not is_room_target:
+                msg["chat_state"] = "active"
 
             rich = build_xhtml_message(text)
             if rich is not None:
@@ -334,8 +355,11 @@ class SessionBot(BaseXMPPBot):
             header = f"[{i}/{total}]\n" if i > 1 else ""
             footer = f"\n[{i}/{total}]" if i < total else ""
             body = header + part + footer if total > 1 else part
-            msg = self.make_message(mto=target, mbody=body, mtype="chat")
-            msg["chat_state"] = "active" if i == total else "composing"
+            if is_room_target:
+                msg = self.make_message(mto=target, mbody=body, mtype="groupchat")
+            else:
+                msg = self.make_message(mto=target, mbody=body, mtype="chat")
+                msg["chat_state"] = "active" if i == total else "composing"
 
             rich = build_xhtml_message(body)
             if rich is not None:
@@ -351,6 +375,41 @@ class SessionBot(BaseXMPPBot):
                 msg.xml.append(meta)
 
             msg.send()
+
+    def _default_reply_recipient(self) -> str:
+        return self.room_jid or self.xmpp_recipient
+
+    def send_typing(self, recipient: str | None = None):
+        target = recipient or self._default_reply_recipient()
+        if self.room_jid and target == self.room_jid:
+            return
+        super().send_typing(recipient=target)
+
+    def _load_room_settings(self) -> None:
+        session = self.sessions.get(self.session_name)
+        self.room_jid = (session.room_jid or "").split("/", 1)[0] if session else None
+        self.room_nick = self.session_name
+
+    async def _join_collaboration_room(self) -> None:
+        room = (self.room_jid or "").strip()
+        if not room:
+            return True
+        try:
+            muc = cast(Any, self["xep_0045"])
+            await muc.join_muc(room, self.room_nick)  # type: ignore[attr-defined]
+            participants = self.sessions.list_collaborators(self.session_name)
+            for participant in participants:
+                if participant == str(self.boundjid.bare):
+                    continue
+                try:
+                    muc.invite(room, participant)  # type: ignore[attr-defined]
+                except Exception:
+                    continue
+            return True
+        except Exception:
+            self.startup_error = f"failed to join collaboration room {room}"
+            self.log.exception("Failed to join collaboration room: %s", room)
+            return False
 
     @staticmethod
     def _infer_meta_tool_from_summary(summary: str) -> str | None:
@@ -583,7 +642,8 @@ class SessionBot(BaseXMPPBot):
         )
 
     async def _handle_session_message(self, msg):
-        if msg["type"] not in ("chat", "normal"):
+        msg_type = msg["type"]
+        if msg_type not in ("chat", "normal", "groupchat"):
             return
 
         if self.shutting_down:
@@ -591,8 +651,27 @@ class SessionBot(BaseXMPPBot):
 
         sender = str(msg["from"].bare)
         dispatcher_jid = self._current_dispatcher_jid()
+
+        if msg_type == "groupchat":
+            room = self.room_jid
+            if not room or sender != room:
+                return
+            nick = str(msg["from"].resource or "")
+            if nick and nick == self.room_nick:
+                return
+            is_scheduled = False
+        else:
+            if self.room_jid and sender != dispatcher_jid:
+                # Collaboration sessions only accept user chat inside the room.
+                return
+            is_scheduled = sender == dispatcher_jid
+
         trusted_peer = self._is_trusted_peer_session_sender(sender)
-        if sender not in (self.xmpp_recipient, dispatcher_jid) and not trusted_peer:
+        if (
+            msg_type != "groupchat"
+            and sender not in (self.xmpp_recipient, dispatcher_jid)
+            and not trusted_peer
+        ):
             return
 
         meta_type, meta_attrs, meta_payload = extract_switch_meta(
@@ -601,8 +680,6 @@ class SessionBot(BaseXMPPBot):
 
         # Allow meta-only messages (e.g., button-based question replies).
         body = (msg["body"] or "").strip()
-        is_scheduled = sender == dispatcher_jid
-
         attachments: list[Attachment] = []
         urls = extract_attachment_urls(msg, body)
 
@@ -868,6 +945,11 @@ class SessionBot(BaseXMPPBot):
         engine = parent.active_engine if parent else "opencode"
         agent = parent.opencode_agent if parent else "bridge"
         model_id = parent.model_id if parent else None
+        owner_jid = parent.owner_jid if parent else None
+        collaborators: list[str] | None = None
+        if parent and parent.room_jid:
+            existing = self.sessions.list_collaborators(self.session_name)
+            collaborators = [jid for jid in existing if jid != owner_jid]
 
         created_name = await lifecycle_create_session(
             self.manager,
@@ -880,6 +962,8 @@ class SessionBot(BaseXMPPBot):
             announce="Sibling session '{name}' (spawned from {parent}). Processing: {preview}...",
             announce_vars={"parent": self.session_name},
             dispatcher_jid=None,
+            owner_jid=owner_jid,
+            collaborators=collaborators,
         )
         if not created_name:
             self.send_reply("Failed to create sibling session")

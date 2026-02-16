@@ -71,7 +71,9 @@ class SessionManager:
         except Exception:
             pass
 
-    async def start_session_bot(self, name: str, jid: str, password: str) -> SessionBot:
+    async def start_session_bot(
+        self, name: str, jid: str, password: str, xmpp_recipient: str
+    ) -> SessionBot:
         """Start a session bot."""
         bot = SessionBot(
             name,
@@ -80,7 +82,7 @@ class SessionManager:
             self.db,
             self.working_dir,
             self.output_dir,
-            self.xmpp_recipient,
+            xmpp_recipient,
             self.xmpp_domain,
             self.xmpp_server,
             self.ejabberd_ctl,
@@ -152,6 +154,9 @@ class SessionManager:
             # Ensure the session has a tmux pane tailing its log.
             create_tmux_session(session.name, self.working_dir)
             await self.start_session_bot(
-                session.name, session.xmpp_jid, session.xmpp_password
+                session.name,
+                session.xmpp_jid,
+                session.xmpp_password,
+                session.owner_jid or self.xmpp_recipient,
             )
         log.info(f"Started {len(active)} existing session(s)")

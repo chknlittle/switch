@@ -50,7 +50,11 @@ class OpenCodeTransport:
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                log.warning(f"OpenCode abort task failed during wait_cancelled: {e}")
+                msg = str(e).lower()
+                if "connector is closed" in msg or "server disconnected" in msg:
+                    log.debug(f"OpenCode abort task ended during shutdown: {e}")
+                else:
+                    log.warning(f"OpenCode abort task failed during wait_cancelled: {e}")
 
     async def start_session(
         self,
@@ -139,21 +143,40 @@ class OpenCodeTransport:
             except asyncio.CancelledError:
                 pass
 
-        if message_task and not message_task.done():
-            message_task.cancel()
+        if message_task:
+            if not message_task.done():
+                message_task.cancel()
             try:
                 await message_task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                # Cancellation commonly races with server-side disconnects or
+                # aborted HTTP responses. Consume these exceptions here so they
+                # don't surface later as "Task exception was never retrieved".
+                msg = str(e).lower()
+                if "server disconnected" in msg or "connector is closed" in msg:
+                    log.debug(f"OpenCode message task ended during cleanup: {e}")
+                elif self._cancelled:
+                    log.debug(f"OpenCode message task failed after cancel: {e}")
+                else:
+                    raise
 
         if (
             self._client_session
             and self._active_session_id
             and not self._client_session.closed
         ):
-            await self._client.abort_session(
-                self._client_session, self._active_session_id
-            )
+            try:
+                await self._client.abort_session(
+                    self._client_session, self._active_session_id
+                )
+            except Exception as e:
+                msg = str(e).lower()
+                if "connector is closed" in msg or "server disconnected" in msg:
+                    log.debug(f"OpenCode abort during cleanup ended after disconnect: {e}")
+                else:
+                    log.warning(f"OpenCode abort failed during cleanup: {e}")
 
         if self._abort_task:
             try:
@@ -163,7 +186,11 @@ class OpenCodeTransport:
             except Exception as e:
                 # Avoid noisy "Task exception was never retrieved" warnings when
                 # cancel races with session/connector shutdown.
-                log.warning(f"OpenCode abort task failed during cleanup: {e}")
+                msg = str(e).lower()
+                if "connector is closed" in msg or "server disconnected" in msg:
+                    log.debug(f"OpenCode abort task ended during cleanup: {e}")
+                else:
+                    log.warning(f"OpenCode abort task failed during cleanup: {e}")
 
         self._client_session = None
         self._abort_task = None

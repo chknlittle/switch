@@ -95,6 +95,7 @@ class DirectoryBot(BaseXMPPBot):
     async def _get_items(self, jid, node, ifrom, data):
         """Return DiscoItems for a requested node."""
         requested = node or self.DISPATCHERS_NODE
+        requester_bare = str(getattr(ifrom, "bare", ifrom) or "").split("/", 1)[0]
 
         if requested == self.DISPATCHERS_NODE:
             return self._items_dispatchers()
@@ -102,7 +103,7 @@ class DirectoryBot(BaseXMPPBot):
         # Direct dispatcher→sessions lookup (no groups indirection).
         if requested.startswith("sessions:"):
             dispatcher_jid = requested[len("sessions:"):]
-            return self._items_sessions(dispatcher_jid)
+            return self._items_sessions(dispatcher_jid, owner_jid=requester_bare)
 
         # Legacy: groups + individuals (kept for backward compat).
         if requested.startswith("groups:"):
@@ -111,7 +112,7 @@ class DirectoryBot(BaseXMPPBot):
 
         if requested.startswith("individuals:"):
             group_jid = requested[len("individuals:") :]
-            return self._items_individuals(group_jid)
+            return self._items_individuals(group_jid, owner_jid=requester_bare)
 
         if requested.startswith("subagents:"):
             return DiscoItems()
@@ -141,7 +142,7 @@ class DirectoryBot(BaseXMPPBot):
         cfg = self.dispatchers_config.get(key) or {}
         return bool(cfg.get("direct"))
 
-    def _items_sessions(self, dispatcher_jid: str) -> DiscoItems:
+    def _items_sessions(self, dispatcher_jid: str, owner_jid: str | None = None) -> DiscoItems:
         """Return sessions for a dispatcher directly (no groups indirection)."""
         items = DiscoItems()
         key = self._dispatcher_key_for_jid(dispatcher_jid)
@@ -154,12 +155,18 @@ class DirectoryBot(BaseXMPPBot):
         if (
             self._active_sessions_cache
             and (now - self._active_sessions_cache_ts) < self.ACTIVE_SESSIONS_CACHE_TTL_S
+            and not owner_jid
         ):
             sessions = self._active_sessions_cache
         else:
-            sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
-            self._active_sessions_cache = sessions
-            self._active_sessions_cache_ts = now
+            if owner_jid:
+                sessions = self.sessions.list_active_recent_for_owner(
+                    owner_jid, limit=self.ACTIVE_SESSIONS_LIMIT
+                )
+            else:
+                sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
+                self._active_sessions_cache = sessions
+                self._active_sessions_cache_ts = now
 
         sessions = self._filter_by_dispatcher(sessions, key)
 
@@ -172,7 +179,10 @@ class DirectoryBot(BaseXMPPBot):
                 continue
 
         # Also include up to 10 recent closed sessions.
-        closed = self.sessions.list_recent_closed(limit=10)
+        if owner_jid:
+            closed = self.sessions.list_recent_closed_for_owner(owner_jid, limit=10)
+        else:
+            closed = self.sessions.list_recent_closed(limit=10)
         closed = self._filter_by_dispatcher(closed, key)
         for s in closed:
             try:
@@ -210,7 +220,7 @@ class DirectoryBot(BaseXMPPBot):
         items.add_item(JID(group_jid), name="Sessions")
         return items
 
-    def _items_individuals(self, group_jid: str) -> DiscoItems:
+    def _items_individuals(self, group_jid: str, owner_jid: str | None = None) -> DiscoItems:
         items = DiscoItems()
         key = self._dispatcher_key_for_group_jid(group_jid)
 
@@ -219,12 +229,18 @@ class DirectoryBot(BaseXMPPBot):
         if (
             self._active_sessions_cache
             and (now - self._active_sessions_cache_ts) < self.ACTIVE_SESSIONS_CACHE_TTL_S
+            and not owner_jid
         ):
             sessions = self._active_sessions_cache
         else:
-            sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
-            self._active_sessions_cache = sessions
-            self._active_sessions_cache_ts = now
+            if owner_jid:
+                sessions = self.sessions.list_active_recent_for_owner(
+                    owner_jid, limit=self.ACTIVE_SESSIONS_LIMIT
+                )
+            else:
+                sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
+                self._active_sessions_cache = sessions
+                self._active_sessions_cache_ts = now
 
         # If we can map the group to a dispatcher, filter to that dispatcher.
         if key:

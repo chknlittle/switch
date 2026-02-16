@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,6 +35,8 @@ class Session:
     model_id: str
     reasoning_mode: str
     dispatcher_jid: str | None
+    owner_jid: str | None
+    room_jid: str | None
     tmux_name: str | None
     created_at: str
     last_active: str
@@ -86,7 +89,11 @@ class SessionRepository:
             opencode_agent=row["opencode_agent"] or "bridge",
             model_id=row["model_id"] or OPENCODE_MODEL_DEFAULT,
             reasoning_mode=row["reasoning_mode"] or "normal",
-            dispatcher_jid=row["dispatcher_jid"] if "dispatcher_jid" in row.keys() else None,
+            dispatcher_jid=row["dispatcher_jid"]
+            if "dispatcher_jid" in row.keys()
+            else None,
+            owner_jid=row["owner_jid"] if "owner_jid" in row.keys() else None,
+            room_jid=row["room_jid"] if "room_jid" in row.keys() else None,
             tmux_name=row["tmux_name"],
             created_at=row["created_at"],
             last_active=row["last_active"],
@@ -117,6 +124,23 @@ class SessionRepository:
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
+    def list_recent_for_owner(self, owner_jid: str, limit: int = 15) -> list[Session]:
+        owner_bare = (owner_jid or "").split("/", 1)[0]
+        rows = self.conn.execute(
+            """SELECT * FROM sessions
+               WHERE owner_jid = ?
+                  OR EXISTS (
+                      SELECT 1
+                      FROM session_collaborators AS c
+                      WHERE c.session_name = sessions.name
+                        AND c.participant_jid = ?
+                  )
+               ORDER BY last_active DESC
+               LIMIT ?""",
+            (owner_bare, owner_bare, limit),
+        ).fetchall()
+        return [self._row_to_session(row) for row in rows]
+
     def list_active(self) -> list[Session]:
         rows = self.conn.execute(
             "SELECT * FROM sessions WHERE status = 'active'"
@@ -134,6 +158,26 @@ class SessionRepository:
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
+    def list_active_recent_for_owner(self, owner_jid: str, limit: int = 50) -> list[Session]:
+        owner_bare = (owner_jid or "").split("/", 1)[0]
+        rows = self.conn.execute(
+            """SELECT * FROM sessions
+               WHERE status = 'active'
+                 AND (
+                     owner_jid = ?
+                     OR EXISTS (
+                         SELECT 1
+                         FROM session_collaborators AS c
+                         WHERE c.session_name = sessions.name
+                           AND c.participant_jid = ?
+                     )
+                 )
+               ORDER BY last_active DESC
+               LIMIT ?""",
+            (owner_bare, owner_bare, limit),
+        ).fetchall()
+        return [self._row_to_session(row) for row in rows]
+
     def list_recent_closed(self, limit: int = 10) -> list[Session]:
         """List most recently active closed sessions (for directory browsing)."""
         rows = self.conn.execute(
@@ -142,6 +186,28 @@ class SessionRepository:
                ORDER BY last_active DESC
                LIMIT ?""",
             (limit,),
+        ).fetchall()
+        return [self._row_to_session(row) for row in rows]
+
+    def list_recent_closed_for_owner(
+        self, owner_jid: str, limit: int = 10
+    ) -> list[Session]:
+        owner_bare = (owner_jid or "").split("/", 1)[0]
+        rows = self.conn.execute(
+            """SELECT * FROM sessions
+               WHERE status = 'closed'
+                 AND (
+                     owner_jid = ?
+                     OR EXISTS (
+                         SELECT 1
+                         FROM session_collaborators AS c
+                         WHERE c.session_name = sessions.name
+                           AND c.participant_jid = ?
+                     )
+                 )
+               ORDER BY last_active DESC
+               LIMIT ?""",
+            (owner_bare, owner_bare, limit),
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
@@ -156,13 +222,17 @@ class SessionRepository:
         active_engine: str = "opencode",
         reasoning_mode: str = "normal",
         dispatcher_jid: str | None = None,
+        owner_jid: str | None = None,
+        room_jid: str | None = None,
     ) -> Session:
+        owner_bare = (owner_jid or "").split("/", 1)[0] or None
+        room_bare = (room_jid or "").split("/", 1)[0] or None
         now = datetime.now().isoformat()
         self.conn.execute(
             """INSERT INTO sessions
                (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                model_id, opencode_agent, active_engine, reasoning_mode, dispatcher_jid)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                model_id, opencode_agent, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 xmpp_jid,
@@ -175,6 +245,8 @@ class SessionRepository:
                 active_engine,
                 reasoning_mode,
                 dispatcher_jid,
+                owner_bare,
+                room_bare,
             ),
         )
         self.conn.commit()
@@ -245,6 +317,43 @@ class SessionRepository:
             (name,),
         )
         self.conn.commit()
+
+    def delete(self, name: str) -> None:
+        self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
+        self.conn.commit()
+
+    def set_collaborators(self, session_name: str, jids: list[str]) -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for jid in jids:
+            bare = (jid or "").split("/", 1)[0].strip()
+            if not bare or bare in seen:
+                continue
+            seen.add(bare)
+            normalized.append(bare)
+
+        self.conn.execute(
+            "DELETE FROM session_collaborators WHERE session_name = ?",
+            (session_name,),
+        )
+        for bare in normalized:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO session_collaborators
+                   (session_name, participant_jid)
+                   VALUES (?, ?)""",
+                (session_name, bare),
+            )
+        self.conn.commit()
+
+    def list_collaborators(self, session_name: str) -> list[str]:
+        rows = self.conn.execute(
+            """SELECT participant_jid
+               FROM session_collaborators
+               WHERE session_name = ?
+               ORDER BY participant_jid ASC""",
+            (session_name,),
+        ).fetchall()
+        return [str(row["participant_jid"]) for row in rows]
 
 
 class RalphLoopRepository:
@@ -393,10 +502,23 @@ def init_db() -> sqlite3.Connection:
             opencode_agent TEXT DEFAULT 'bridge',
             model_id TEXT DEFAULT 'glm_vllm/glm-4.7-flash',
             reasoning_mode TEXT DEFAULT 'normal',
+            dispatcher_jid TEXT,
+            owner_jid TEXT,
+            room_jid TEXT,
             tmux_name TEXT,
             created_at TEXT NOT NULL,
             last_active TEXT NOT NULL,
             status TEXT DEFAULT 'active'
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS session_collaborators (
+            session_name TEXT NOT NULL,
+            participant_jid TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (session_name, participant_jid),
+            FOREIGN KEY (session_name) REFERENCES sessions(name) ON DELETE CASCADE
         )
     """)
 
@@ -408,7 +530,6 @@ def init_db() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_status_last_active ON sessions(status, last_active DESC)"
     )
-
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ralph_loops (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -450,10 +571,34 @@ def init_db() -> sqlite3.Connection:
         ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_DEFAULT}'"),
         ("reasoning_mode", "TEXT DEFAULT 'normal'"),
         ("dispatcher_jid", "TEXT"),
+        ("owner_jid", "TEXT"),
+        ("room_jid", "TEXT"),
     ]
     for col_name, col_type in migrations:
         try:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_type}")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_owner_last_active ON sessions(owner_jid, last_active DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_room_jid ON sessions(room_jid)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_session_collaborators_session ON session_collaborators(session_name)"
+    )
+
+    # Backfill ownership for existing rows from legacy single-user config.
+    default_owner = (os.getenv("XMPP_RECIPIENT", "") or "").split("/", 1)[0].strip()
+    if default_owner:
+        try:
+            conn.execute(
+                "UPDATE sessions SET owner_jid = ? WHERE owner_jid IS NULL",
+                (default_owner,),
+            )
             conn.commit()
         except sqlite3.OperationalError:
             pass
