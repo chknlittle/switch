@@ -116,6 +116,10 @@ Examples of what needs tmux:
 - Servers or daemons you're testing
 - Any batch processing job
 
+### Clarifying Assumptions
+
+When resource state or constraints are ambiguous, pause and ask one targeted clarification question before changing strategy (for example, falling back from GPU to CPU, changing deployment targets, or reducing scope). Do not silently choose an unrequested fallback when the user intent is likely to be affected.
+
 ### Skills (Runbooks)
 
 Reusable procedures live in `~/switch/skills/`. Check these for common operations:
