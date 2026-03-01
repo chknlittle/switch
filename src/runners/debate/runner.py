@@ -92,10 +92,11 @@ class DebateRunner(BaseRunner):
 
     async def _resolve_models(
         self,
-    ) -> tuple[str, str, str, str]:
+    ) -> tuple[str, str, str, str, str | None]:
         """Resolve primary/secondary model URLs and names based on availability.
 
-        Returns (primary_url, primary_name, secondary_url, secondary_name).
+        Returns (primary_url, primary_name, secondary_url, secondary_name, degraded_msg).
+        degraded_msg is None when both models are up, otherwise a user-facing warning.
         Primary = Qwen (model_a), Secondary = GLM (model_b).
         If one is down, both roles use the other.
         Raises RuntimeError if both are down.
@@ -111,13 +112,13 @@ class DebateRunner(BaseRunner):
         )
 
         if a_ok and b_ok:
-            return a_url, a_name, b_url, b_name
+            return a_url, a_name, b_url, b_name, None
         if a_ok and not b_ok:
             log.warning("GLM (%s) unavailable — Qwen handles all roles", b_url)
-            return a_url, a_name, a_url, a_name
+            return a_url, a_name, a_url, a_name, f"[{b_name} unavailable — {a_name} handling all roles]"
         if b_ok and not a_ok:
             log.warning("Qwen (%s) unavailable — GLM handles all roles", a_url)
-            return b_url, b_name, b_url, b_name
+            return b_url, b_name, b_url, b_name, f"[{a_name} unavailable — {b_name} handling all roles]"
         raise RuntimeError(
             f"Both models unavailable: {a_name} ({a_url}), {b_name} ({b_url})"
         )
@@ -222,10 +223,13 @@ class DebateRunner(BaseRunner):
         self._cancelled = False
 
         try:
-            primary_url, primary_name, _, _ = await self._resolve_models()
+            primary_url, primary_name, _, _, degraded = await self._resolve_models()
         except RuntimeError as e:
             yield ("error", str(e))
             return
+
+        if degraded:
+            yield ("text", f"{degraded}\n\n")
 
         question_prompt = (
             "You are about to help with the following task:\n\n"
@@ -273,12 +277,16 @@ class DebateRunner(BaseRunner):
         self._log_prompt(prompt)
 
         try:
-            primary_url, primary_name, secondary_url, secondary_name = (
+            primary_url, primary_name, secondary_url, secondary_name, degraded = (
                 await self._resolve_models()
             )
         except RuntimeError as e:
             yield ("error", str(e))
             return
+
+        solo_mode = primary_url == secondary_url
+        if degraded:
+            yield ("text", f"{degraded}\n\n")
 
         plan_prompt = (
             "You are participating in a collaborative planning process. "
@@ -341,9 +349,10 @@ class DebateRunner(BaseRunner):
             if not plan_a.content_text and not plan_b.content_text:
                 yield ("text", "\n\n[Both models failed — cannot continue debate]")
                 duration = time.monotonic() - start
+                model_label = f"{primary_name} (solo)" if solo_mode else f"{primary_name} vs {secondary_name}"
                 yield ("result", {
                     "engine": "debate",
-                    "model": f"{primary_name} vs {secondary_name}",
+                    "model": model_label,
                     "duration_s": round(duration, 2),
                     "summary": f"debate failed | {duration:.1f}s",
                 })
@@ -494,14 +503,15 @@ class DebateRunner(BaseRunner):
 
             # ── Stats ──
             duration = time.monotonic() - start
+            model_label = f"{primary_name} (solo)" if solo_mode else f"{primary_name} vs {secondary_name}"
             yield (
                 "result",
                 {
                     "engine": "debate",
-                    "model": f"{primary_name} vs {secondary_name}",
+                    "model": model_label,
                     "duration_s": round(duration, 2),
                     "summary": (
-                        f"debate {primary_name} vs {secondary_name} "
+                        f"debate {model_label} "
                         f"| {duration:.1f}s"
                     ),
                 },
