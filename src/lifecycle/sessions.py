@@ -106,8 +106,7 @@ async def create_session(
         try:
             on_reserved(name)
         except Exception:
-            # Purely informational.
-            pass
+            _log.warning("on_reserved callback failed for %s", name, exc_info=True)
 
     recipient = (owner_jid or manager.xmpp_recipient).split("/", 1)[0]
     recipient_user = recipient.split("@")[0]
@@ -147,7 +146,7 @@ async def create_session(
 
     create_tmux_session(name, str(session_work_dir))
 
-    manager.sessions.create(
+    await manager.sessions.create(
         name=name,
         xmpp_jid=jid,
         xmpp_password=password,
@@ -158,7 +157,7 @@ async def create_session(
         owner_jid=recipient,
         room_jid=room_jid,
     )
-    manager.sessions.set_collaborators(name, collab_members)
+    await manager.sessions.set_collaborators(name, collab_members)
 
     bot = await manager.start_session_bot(name, jid, password, recipient)
     connected = await bot.wait_connected(timeout=8)
@@ -168,7 +167,7 @@ async def create_session(
             name,
             getattr(bot, "startup_error", "unknown error"),
         )
-        _rollback_failed_create(manager, name, jid, dispatcher_jid=dispatcher_jid)
+        await _rollback_failed_create(manager, name, jid, dispatcher_jid=dispatcher_jid)
         return None
 
     preview = (message or "").strip()[:50]
@@ -201,7 +200,7 @@ async def create_session(
     return name
 
 
-def _rollback_failed_create(
+async def _rollback_failed_create(
     manager: _SessionCreateManager,
     name: str,
     jid: str,
@@ -232,7 +231,7 @@ def _rollback_failed_create(
         _log.warning("Failed to kill tmux session during rollback for %s", name, exc_info=True)
 
     try:
-        manager.sessions.delete(name)
+        await manager.sessions.delete(name)
     except Exception:
         _log.warning("Failed to delete DB row during rollback for %s", name, exc_info=True)
 
@@ -270,7 +269,7 @@ async def kill_session(
                 bot.send_reply(goodbye)
                 await asyncio.sleep(0.25)
             except Exception:
-                pass
+                _log.warning("Failed to send goodbye for %s", name, exc_info=True)
 
     # If the bot is running, cancel in-flight work and prevent reconnects before we delete the account.
     bot = manager.session_bots.get(name)
@@ -280,7 +279,7 @@ async def kill_session(
             bot.cancel_operations(notify=False)
             bot.disconnect()
         except Exception:
-            pass
+            _log.warning("Failed to clean up bot for %s", name, exc_info=True)
 
     username = session.xmpp_jid.split("@")[0]
     delete_xmpp_account(
@@ -290,7 +289,7 @@ async def kill_session(
         getattr(bot, "log", None) or _log,
     )
     kill_tmux_session(name)
-    manager.sessions.close(name)
+    await manager.sessions.close(name)
     manager.session_bots.pop(name, None)
 
     manager.notify_directory_sessions_changed()

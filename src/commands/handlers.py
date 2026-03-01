@@ -128,7 +128,7 @@ class CommandHandler:
             self.bot.send_reply("Usage: /agent oc|cc|pi")
             return True
 
-        self.bot.sessions.update_engine(self.bot.session_name, engine)
+        await self.bot.sessions.update_engine(self.bot.session_name, engine)
         self.bot.send_reply(f"Active engine set to {engine}.")
         return True
 
@@ -150,7 +150,7 @@ class CommandHandler:
             self.bot.send_reply("/thinking only applies to Pi sessions.")
             return True
 
-        self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])
+        await self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])
         self.bot.send_reply(f"Reasoning mode set to {parts[1]}.")
         return True
 
@@ -163,7 +163,7 @@ class CommandHandler:
             return True
 
         model_id = parts[1].strip()
-        self.bot.sessions.update_model(self.bot.session_name, model_id)
+        await self.bot.sessions.update_model(self.bot.session_name, model_id)
         self.bot.send_reply(f"Model set to {model_id}.")
         return True
 
@@ -180,9 +180,9 @@ class CommandHandler:
 
         engine = (session.active_engine or "").strip().lower()
         if engine == "claude":
-            self.bot.sessions.reset_claude_session(self.bot.session_name)
+            await self.bot.sessions.reset_claude_session(self.bot.session_name)
         elif engine in {"pi", "debate"}:
-            self.bot.sessions.reset_pi_session(self.bot.session_name)
+            await self.bot.sessions.reset_pi_session(self.bot.session_name)
         else:
             self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
             return True

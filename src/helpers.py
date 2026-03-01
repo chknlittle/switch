@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import sqlite3
@@ -12,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from src.utils import run_ejabberdctl
+
+log = logging.getLogger(__name__)
 
 HISTORY_PATH = Path.home() / ".claude" / "history.jsonl"
 ACTIVITY_LOG_PATH = Path.home() / ".claude" / "activity.jsonl"
@@ -49,7 +52,7 @@ def append_to_history(message: str, project: str, session_id: str | None = None)
         with open(HISTORY_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception:
-        pass
+        log.debug("Failed to append to history file", exc_info=True)
 
 
 def log_activity(message: str, session: str | None = None, source: str = "xmpp"):
@@ -64,7 +67,7 @@ def log_activity(message: str, session: str | None = None, source: str = "xmpp")
         with open(ACTIVITY_LOG_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception:
-        pass
+        log.debug("Failed to append to activity log", exc_info=True)
 
 
 def create_xmpp_account(

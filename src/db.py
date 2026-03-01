@@ -10,11 +10,15 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 
 DB_PATH = Path(__file__).parent.parent / "sessions.db"
@@ -75,6 +79,7 @@ class SessionRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._write_lock = asyncio.Lock()
 
     def _row_to_session(self, row: sqlite3.Row) -> Session:
         return Session(
@@ -208,7 +213,7 @@ class SessionRepository:
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
-    def create(
+    async def create(
         self,
         name: str,
         xmpp_jid: str,
@@ -224,102 +229,113 @@ class SessionRepository:
         owner_bare = (owner_jid or "").split("/", 1)[0] or None
         room_bare = (room_jid or "").split("/", 1)[0] or None
         now = datetime.now().isoformat()
-        self.conn.execute(
-            """INSERT INTO sessions
-               (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                model_id, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                name,
-                xmpp_jid,
-                xmpp_password,
-                tmux_name,
-                now,
-                now,
-                model_id,
-                active_engine,
-                reasoning_mode,
-                dispatcher_jid,
-                owner_bare,
-                room_bare,
-            ),
-        )
-        self.conn.commit()
+        async with self._write_lock:
+            self.conn.execute(
+                """INSERT INTO sessions
+                   (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
+                    model_id, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    name,
+                    xmpp_jid,
+                    xmpp_password,
+                    tmux_name,
+                    now,
+                    now,
+                    model_id,
+                    active_engine,
+                    reasoning_mode,
+                    dispatcher_jid,
+                    owner_bare,
+                    room_bare,
+                ),
+            )
+            self.conn.commit()
         created = self.get(name)
         if not created:
             raise RuntimeError(f"Failed to load newly created session: {name}")
         return created
 
-    def update_last_active(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET last_active = ? WHERE name = ?",
-            (datetime.now().isoformat(), name),
-        )
-        self.conn.commit()
+    async def update_last_active(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET last_active = ? WHERE name = ?",
+                (datetime.now().isoformat(), name),
+            )
+            self.conn.commit()
 
-    def update_engine(self, name: str, engine: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET active_engine = ? WHERE name = ?",
-            (engine, name),
-        )
-        self.conn.commit()
+    async def update_engine(self, name: str, engine: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET active_engine = ? WHERE name = ?",
+                (engine, name),
+            )
+            self.conn.commit()
 
-    def update_reasoning_mode(self, name: str, mode: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET reasoning_mode = ? WHERE name = ?",
-            (mode, name),
-        )
-        self.conn.commit()
+    async def update_reasoning_mode(self, name: str, mode: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET reasoning_mode = ? WHERE name = ?",
+                (mode, name),
+            )
+            self.conn.commit()
 
-    def update_model(self, name: str, model_id: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET model_id = ? WHERE name = ?",
-            (model_id, name),
-        )
-        self.conn.commit()
+    async def update_model(self, name: str, model_id: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET model_id = ? WHERE name = ?",
+                (model_id, name),
+            )
+            self.conn.commit()
 
-    def update_claude_session_id(self, name: str, session_id: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET claude_session_id = ? WHERE name = ?",
-            (session_id, name),
-        )
-        self.conn.commit()
+    async def update_claude_session_id(self, name: str, session_id: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET claude_session_id = ? WHERE name = ?",
+                (session_id, name),
+            )
+            self.conn.commit()
 
-    def update_pi_session_id(self, name: str, session_id: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET pi_session_id = ? WHERE name = ?",
-            (session_id, name),
-        )
-        self.conn.commit()
+    async def update_pi_session_id(self, name: str, session_id: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET pi_session_id = ? WHERE name = ?",
+                (session_id, name),
+            )
+            self.conn.commit()
 
-    def reset_claude_session(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
-            (name,),
-        )
-        self.conn.commit()
+    async def reset_claude_session(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
+                (name,),
+            )
+            self.conn.commit()
 
-    def reset_pi_session(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET pi_session_id = NULL WHERE name = ?",
-            (name,),
-        )
-        self.conn.commit()
+    async def reset_pi_session(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET pi_session_id = NULL WHERE name = ?",
+                (name,),
+            )
+            self.conn.commit()
 
-    def close(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET status = 'closed' WHERE name = ?",
-            (name,),
-        )
-        self.conn.commit()
+    async def close(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET status = 'closed' WHERE name = ?",
+                (name,),
+            )
+            self.conn.commit()
 
-    def delete(self, name: str) -> None:
-        self.conn.execute("DELETE FROM session_messages WHERE session_name = ?", (name,))
-        self.conn.execute("DELETE FROM ralph_loops WHERE session_name = ?", (name,))
-        self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
-        self.conn.commit()
+    async def delete(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute("DELETE FROM session_messages WHERE session_name = ?", (name,))
+            self.conn.execute("DELETE FROM ralph_loops WHERE session_name = ?", (name,))
+            self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
+            self.conn.commit()
 
-    def set_collaborators(self, session_name: str, jids: list[str]) -> None:
+    async def set_collaborators(self, session_name: str, jids: list[str]) -> None:
         normalized: list[str] = []
         seen: set[str] = set()
         for jid in jids:
@@ -329,18 +345,19 @@ class SessionRepository:
             seen.add(bare)
             normalized.append(bare)
 
-        self.conn.execute(
-            "DELETE FROM session_collaborators WHERE session_name = ?",
-            (session_name,),
-        )
-        for bare in normalized:
+        async with self._write_lock:
             self.conn.execute(
-                """INSERT OR IGNORE INTO session_collaborators
-                   (session_name, participant_jid)
-                   VALUES (?, ?)""",
-                (session_name, bare),
+                "DELETE FROM session_collaborators WHERE session_name = ?",
+                (session_name,),
             )
-        self.conn.commit()
+            for bare in normalized:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO session_collaborators
+                       (session_name, participant_jid)
+                       VALUES (?, ?)""",
+                    (session_name, bare),
+                )
+            self.conn.commit()
 
     def list_collaborators(self, session_name: str) -> list[str]:
         rows = self.conn.execute(
@@ -358,6 +375,7 @@ class RalphLoopRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._write_lock = asyncio.Lock()
 
     def _row_to_ralph_loop(self, row: sqlite3.Row) -> RalphLoop:
         return RalphLoop(
@@ -385,7 +403,7 @@ class RalphLoopRepository:
         ).fetchone()
         return self._row_to_ralph_loop(row) if row else None
 
-    def create(
+    async def create(
         self,
         session_name: str,
         prompt: str,
@@ -393,25 +411,26 @@ class RalphLoopRepository:
         completion_promise: str | None = None,
         wait_seconds: float = 2.0,
     ) -> int:
-        cursor = self.conn.execute(
-            """INSERT INTO ralph_loops
-               (session_name, prompt, completion_promise, max_iterations, wait_seconds, started_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                session_name,
-                prompt,
-                completion_promise,
-                max_iterations,
-                wait_seconds,
-                datetime.now().isoformat(),
-            ),
-        )
-        self.conn.commit()
-        if cursor.lastrowid is None:
-            raise RuntimeError("Failed to create ralph loop (no rowid)")
-        return int(cursor.lastrowid)
+        async with self._write_lock:
+            cursor = self.conn.execute(
+                """INSERT INTO ralph_loops
+                   (session_name, prompt, completion_promise, max_iterations, wait_seconds, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    session_name,
+                    prompt,
+                    completion_promise,
+                    max_iterations,
+                    wait_seconds,
+                    datetime.now().isoformat(),
+                ),
+            )
+            self.conn.commit()
+            if cursor.lastrowid is None:
+                raise RuntimeError("Failed to create ralph loop (no rowid)")
+            return int(cursor.lastrowid)
 
-    def update_progress(
+    async def update_progress(
         self,
         loop_id: int,
         current_iteration: int,
@@ -419,14 +438,15 @@ class RalphLoopRepository:
         status: str = "running",
     ) -> None:
         finished_at = datetime.now().isoformat() if status != "running" else None
-        self.conn.execute(
-            """UPDATE ralph_loops
-               SET current_iteration = ?, total_cost = ?, status = ?,
-                   finished_at = COALESCE(?, finished_at)
-               WHERE id = ?""",
-            (current_iteration, total_cost, status, finished_at, loop_id),
-        )
-        self.conn.commit()
+        async with self._write_lock:
+            self.conn.execute(
+                """UPDATE ralph_loops
+                   SET current_iteration = ?, total_cost = ?, status = ?,
+                       finished_at = COALESCE(?, finished_at)
+                   WHERE id = ?""",
+                (current_iteration, total_cost, status, finished_at, loop_id),
+            )
+            self.conn.commit()
 
 
 class MessageRepository:
@@ -434,6 +454,7 @@ class MessageRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._write_lock = asyncio.Lock()
 
     def _row_to_message(self, row: sqlite3.Row) -> SessionMessage:
         return SessionMessage(
@@ -445,20 +466,21 @@ class MessageRepository:
             created_at=row["created_at"],
         )
 
-    def add(
+    async def add(
         self,
         session_name: str,
         role: str,
         content: str,
         engine: str,
     ) -> None:
-        self.conn.execute(
-            """INSERT INTO session_messages
-               (session_name, role, content, engine, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (session_name, role, content, engine, datetime.now().isoformat()),
-        )
-        self.conn.commit()
+        async with self._write_lock:
+            self.conn.execute(
+                """INSERT INTO session_messages
+                   (session_name, role, content, engine, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_name, role, content, engine, datetime.now().isoformat()),
+            )
+            self.conn.commit()
 
     def list_recent(self, session_name: str, limit: int = 40) -> list[SessionMessage]:
         rows = self.conn.execute(
@@ -482,7 +504,7 @@ def init_db() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
     except sqlite3.OperationalError:
         # Best-effort; some environments may reject specific pragmas.

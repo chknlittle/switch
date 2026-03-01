@@ -503,7 +503,7 @@ class SessionRuntime:
 
         now = time.monotonic()
         if (now - self._last_active_written_at) >= self._last_active_min_interval_s:
-            self._sessions.update_last_active(self.session_name)
+            await self._sessions.update_last_active(self.session_name)
             self._last_active_written_at = now
 
         body_for_history = self._prompt.augment_prompt(item.body, item.attachments)
@@ -511,7 +511,7 @@ class SessionRuntime:
             body_for_history, self.working_dir, session.claude_session_id
         )
         self._history.log_activity(item.body, session=self.session_name, source="xmpp")
-        self._messages.add(
+        await self._messages.add(
             self.session_name, "user", body_for_history, session.active_engine
         )
 
@@ -527,14 +527,14 @@ class SessionRuntime:
         finally:
             self._run_task = None
 
-    def _ralph_save(self, status: str) -> None:
+    async def _ralph_save(self, status: str) -> None:
         if (
             not self._ralph_loops
             or not self._ralph_status
             or not self._ralph_status.loop_id
         ):
             return
-        self._ralph_loops.update_progress(
+        await self._ralph_loops.update_progress(
             self._ralph_status.loop_id,
             self._ralph_status.current_iteration,
             self._ralph_status.total_cost,
@@ -556,7 +556,7 @@ class SessionRuntime:
         # Persist loop record.
         if self._ralph_loops:
             try:
-                loop_id = self._ralph_loops.create(
+                loop_id = await self._ralph_loops.create(
                     self.session_name,
                     cfg.prompt,
                     int(cfg.max_iterations or 0),
@@ -586,7 +586,7 @@ class SessionRuntime:
             while True:
                 if self.shutting_down:
                     self._ralph_status.status = "cancelled"
-                    self._ralph_save("cancelled")
+                    await self._ralph_save("cancelled")
                     return
 
                 if self._ralph_stop_requested:
@@ -597,7 +597,7 @@ class SessionRuntime:
                             f"Total cost: ${self._ralph_status.total_cost:.3f}"
                         )
                     )
-                    self._ralph_save("cancelled")
+                    await self._ralph_save("cancelled")
                     return
 
                 if cfg.max_iterations and cfg.max_iterations > 0:
@@ -609,11 +609,11 @@ class SessionRuntime:
                                 f"Total cost: ${self._ralph_status.total_cost:.3f}"
                             )
                         )
-                        self._ralph_save("max_iterations")
+                        await self._ralph_save("max_iterations")
                         return
 
                 self._ralph_status.current_iteration += 1
-                self._ralph_save("running")
+                await self._ralph_save("running")
 
                 # Re-read session state each iteration so model/engine changes apply.
                 session = self._sessions.get(self.session_name)
@@ -621,7 +621,7 @@ class SessionRuntime:
                     self._ralph_status.status = "error"
                     self._ralph_status.error = "Session not found"
                     await self._emit(OutboundMessage("Session not found in database."))
-                    self._ralph_save("error")
+                    await self._ralph_save("error")
                     return
 
                 result = await self._run_ralph_iteration(cfg, session)
@@ -634,7 +634,7 @@ class SessionRuntime:
                             f"Stopping. Total cost: ${self._ralph_status.total_cost:.3f}"
                         )
                     )
-                    self._ralph_save("error")
+                    await self._ralph_save("error")
                     return
 
                 self._ralph_status.total_cost += float(result.cost)
@@ -661,10 +661,10 @@ class SessionRuntime:
                             f"Total cost: ${self._ralph_status.total_cost:.3f}"
                         )
                     )
-                    self._ralph_save("completed")
+                    await self._ralph_save("completed")
                     return
 
-                self._ralph_save("running")
+                await self._ralph_save("running")
                 if cfg.wait_seconds and cfg.wait_seconds > 0:
                     try:
                         await asyncio.wait_for(
@@ -689,7 +689,7 @@ class SessionRuntime:
                         await self._emit(
                             OutboundMessage("Session not found in database.")
                         )
-                        self._ralph_save("error")
+                        await self._ralph_save("error")
                         return
 
                     await self._emit(
@@ -708,7 +708,7 @@ class SessionRuntime:
                                 f"Stopping. Total cost: ${self._ralph_status.total_cost:.3f}"
                             )
                         )
-                        self._ralph_save("error")
+                        await self._ralph_save("error")
                         return
 
                     self._ralph_status.total_cost += float(result.cost)
@@ -737,11 +737,11 @@ class SessionRuntime:
                                 f"Total cost: ${self._ralph_status.total_cost:.3f}"
                             )
                         )
-                        self._ralph_save("completed")
+                        await self._ralph_save("completed")
                         return
 
                     # Apply wait after injection too.
-                    self._ralph_save("running")
+                    await self._ralph_save("running")
                     if cfg.wait_seconds and cfg.wait_seconds > 0:
                         try:
                             await asyncio.wait_for(
@@ -754,7 +754,7 @@ class SessionRuntime:
         finally:
             if self._ralph_status and self._ralph_status.status == "running":
                 self._ralph_status.status = "finished"
-                self._ralph_save("finished")
+                await self._ralph_save("finished")
 
     @dataclass
     class _RalphIterationResult:
@@ -799,7 +799,7 @@ class SessionRuntime:
             async for event_type, content in self.runner.run(prompt, session_id):
                 if event_type == "session_id" and isinstance(content, str) and content:
                     if not cfg.prompt_only:
-                        self._save_session_id(engine, content)
+                        await self._save_session_id(engine, content)
                 elif event_type == "text" and isinstance(content, str):
                     if accumulate_text:
                         accumulated += content
@@ -829,7 +829,13 @@ class SessionRuntime:
         except Exception as e:
             result.error = f"{type(e).__name__}: {e}"
         finally:
+            runner_ref = self.runner
             self.runner = None
+            if runner_ref and hasattr(runner_ref, "cleanup"):
+                try:
+                    await runner_ref.cleanup()
+                except Exception:
+                    log.warning("Runner cleanup failed", exc_info=True)
         return result
 
     # ------------------------------------------------------------------
@@ -879,11 +885,11 @@ class SessionRuntime:
             return session.pi_session_id
         return None
 
-    def _save_session_id(self, engine: str, session_id: str) -> None:
+    async def _save_session_id(self, engine: str, session_id: str) -> None:
         if engine == "claude":
-            self._sessions.update_claude_session_id(self.session_name, session_id)
+            await self._sessions.update_claude_session_id(self.session_name, session_id)
         elif engine == "pi":
-            self._sessions.update_pi_session_id(self.session_name, session_id)
+            await self._sessions.update_pi_session_id(self.session_name, session_id)
 
     async def _run_engine(
         self, *, engine: str, session: SessionState, prompt: str
@@ -922,7 +928,7 @@ class SessionRuntime:
                 return
 
             if event_type == "session_id" and isinstance(content, str) and content:
-                self._save_session_id(engine, content)
+                await self._save_session_id(engine, content)
             elif event_type == "text" and isinstance(content, str):
                 if accumulate_text:
                     accumulated += content
@@ -1130,7 +1136,7 @@ class SessionRuntime:
                 meta_attrs=meta_attrs,
             )
         )
-        self._messages.add(
+        await self._messages.add(
             self.session_name,
             "assistant",
             response_parts[-1] if response_parts else "",
