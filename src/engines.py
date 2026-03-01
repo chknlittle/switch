@@ -16,6 +16,8 @@ OPENCODE_MODEL_KIMI_CODING = os.getenv(
     "OPENCODE_MODEL_KIMI_CODING", "kimi-for-coding/kimi-k2.5"
 )
 
+PI_MODEL_DEFAULT = os.getenv("PI_MODEL_DEFAULT", "")
+
 
 @dataclass(frozen=True)
 class EngineSpec:
@@ -26,13 +28,17 @@ class EngineSpec:
 ENGINE_SPECS = {
     "claude": EngineSpec(name="claude", supports_reasoning=False),
     "opencode": EngineSpec(name="opencode", supports_reasoning=True),
+    "pi": EngineSpec(name="pi", supports_reasoning=True),
+    "debate": EngineSpec(name="debate", supports_reasoning=False),
 }
 
 ENGINE_ALIASES = {
     "cc": "claude",
     "claude": "claude",
-    "oc": "opencode",
-    "opencode": "opencode",
+    "oc": "pi",
+    "opencode": "pi",
+    "pi": "pi",
+    "debate": "debate",
 }
 
 

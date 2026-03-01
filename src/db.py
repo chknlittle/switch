@@ -30,6 +30,7 @@ class Session:
     xmpp_password: str
     claude_session_id: str | None
     opencode_session_id: str | None
+    pi_session_id: str | None
     active_engine: str
     opencode_agent: str
     model_id: str
@@ -85,9 +86,10 @@ class SessionRepository:
             xmpp_password=row["xmpp_password"],
             claude_session_id=row["claude_session_id"],
             opencode_session_id=row["opencode_session_id"],
-            active_engine=row["active_engine"] or "opencode",
+            pi_session_id=row["pi_session_id"] if "pi_session_id" in row.keys() else None,
+            active_engine=row["active_engine"] or "pi",
             opencode_agent=row["opencode_agent"] or "bridge",
-            model_id=row["model_id"] or OPENCODE_MODEL_DEFAULT,
+            model_id=row["model_id"] or None,
             reasoning_mode=row["reasoning_mode"] or "normal",
             dispatcher_jid=row["dispatcher_jid"]
             if "dispatcher_jid" in row.keys()
@@ -217,9 +219,9 @@ class SessionRepository:
         xmpp_jid: str,
         xmpp_password: str,
         tmux_name: str,
-        model_id: str = OPENCODE_MODEL_DEFAULT,
+        model_id: str | None = None,
         opencode_agent: str = "bridge",
-        active_engine: str = "opencode",
+        active_engine: str = "pi",
         reasoning_mode: str = "normal",
         dispatcher_jid: str | None = None,
         owner_jid: str | None = None,
@@ -297,6 +299,13 @@ class SessionRepository:
         )
         self.conn.commit()
 
+    def update_pi_session_id(self, name: str, session_id: str) -> None:
+        self.conn.execute(
+            "UPDATE sessions SET pi_session_id = ? WHERE name = ?",
+            (session_id, name),
+        )
+        self.conn.commit()
+
     def reset_claude_session(self, name: str) -> None:
         self.conn.execute(
             "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
@@ -311,6 +320,13 @@ class SessionRepository:
         )
         self.conn.commit()
 
+    def reset_pi_session(self, name: str) -> None:
+        self.conn.execute(
+            "UPDATE sessions SET pi_session_id = NULL WHERE name = ?",
+            (name,),
+        )
+        self.conn.commit()
+
     def close(self, name: str) -> None:
         self.conn.execute(
             "UPDATE sessions SET status = 'closed' WHERE name = ?",
@@ -319,6 +335,8 @@ class SessionRepository:
         self.conn.commit()
 
     def delete(self, name: str) -> None:
+        self.conn.execute("DELETE FROM session_messages WHERE session_name = ?", (name,))
+        self.conn.execute("DELETE FROM ralph_loops WHERE session_name = ?", (name,))
         self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
         self.conn.commit()
 
@@ -498,7 +516,7 @@ def init_db() -> sqlite3.Connection:
             xmpp_password TEXT NOT NULL,
             claude_session_id TEXT,
             opencode_session_id TEXT,
-            active_engine TEXT DEFAULT 'opencode',
+            active_engine TEXT DEFAULT 'pi',
             opencode_agent TEXT DEFAULT 'bridge',
             model_id TEXT DEFAULT 'glm_vllm/glm-4.7-flash',
             reasoning_mode TEXT DEFAULT 'normal',
@@ -543,7 +561,7 @@ def init_db() -> sqlite3.Connection:
             status TEXT DEFAULT 'running',
             started_at TEXT NOT NULL,
             finished_at TEXT,
-            FOREIGN KEY (session_name) REFERENCES sessions(name)
+            FOREIGN KEY (session_name) REFERENCES sessions(name) ON DELETE CASCADE
         )
     """)
 
@@ -555,7 +573,7 @@ def init_db() -> sqlite3.Connection:
             content TEXT NOT NULL,
             engine TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            FOREIGN KEY (session_name) REFERENCES sessions(name)
+            FOREIGN KEY (session_name) REFERENCES sessions(name) ON DELETE CASCADE
         )
     """)
 
@@ -566,13 +584,14 @@ def init_db() -> sqlite3.Connection:
     # Migrations for existing databases
     migrations = [
         ("opencode_session_id", "TEXT"),
-        ("active_engine", "TEXT DEFAULT 'opencode'"),
+        ("active_engine", "TEXT DEFAULT 'pi'"),
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
         ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_DEFAULT}'"),
         ("reasoning_mode", "TEXT DEFAULT 'normal'"),
         ("dispatcher_jid", "TEXT"),
         ("owner_jid", "TEXT"),
         ("room_jid", "TEXT"),
+        ("pi_session_id", "TEXT"),
     ]
     for col_name, col_type in migrations:
         try:

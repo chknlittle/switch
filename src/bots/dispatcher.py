@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine, cast
 
 from src.db import SessionRepository
-from src.engines import OPENCODE_MODEL_DEFAULT
+from src.engines import PI_MODEL_DEFAULT
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.ralph import parse_ralph_command
 from src.runners import create_runner
-from src.runners.opencode.config import OpenCodeConfig
+from src.runners.pi.config import PiConfig
 from src.utils import BaseXMPPBot
 
 if TYPE_CHECKING:
@@ -51,10 +51,10 @@ class DispatcherBot(BaseXMPPBot):
         ejabberd_ctl: str,
         manager: "SessionManager | None" = None,
         *,
-        engine: str = "opencode",
+        engine: str = "pi",
         opencode_agent: str | None = "bridge",
         model_id: str | None = None,
-        label: str = "GLM 4.7 Heretic",
+        label: str = "Pi",
     ):
         super().__init__(jid, password)
         # Initialize logger early because Slixmpp can deliver stanzas before
@@ -267,12 +267,11 @@ class DispatcherBot(BaseXMPPBot):
             working_dir = str(repo_path)
 
         runner = create_runner(
-            "opencode",
+            "pi",
             working_dir=working_dir,
             output_dir=Path(self.working_dir) / "output",
-            opencode_config=OpenCodeConfig(
-                model=OPENCODE_MODEL_DEFAULT,
-                agent="bridge",
+            pi_config=PiConfig(
+                model=PI_MODEL_DEFAULT or None,
             ),
         )
 

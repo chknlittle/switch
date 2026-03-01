@@ -9,6 +9,7 @@ from src.engines import normalize_engine
 from src.core.session_runtime.api import RalphConfig
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.ralph import parse_ralph_command
+from src.runners.pi.runner import PiRunner
 
 if TYPE_CHECKING:
     from src.bots.session import SessionBot
@@ -119,12 +120,12 @@ class CommandHandler:
         """Switch active engine."""
         parts = body.strip().lower().split()
         if len(parts) < 2:
-            self.bot.send_reply("Usage: /agent oc|cc")
+            self.bot.send_reply("Usage: /agent oc|cc|pi")
             return True
 
         engine = normalize_engine(parts[1])
         if not engine:
-            self.bot.send_reply("Usage: /agent oc|cc")
+            self.bot.send_reply("Usage: /agent oc|cc|pi")
             return True
 
         self.bot.sessions.update_engine(self.bot.session_name, engine)
@@ -145,8 +146,8 @@ class CommandHandler:
             return True
 
         engine = (session.active_engine or "").strip().lower()
-        if engine != "opencode":
-            self.bot.send_reply("/thinking only applies to OpenCode sessions.")
+        if engine not in {"opencode", "pi"}:
+            self.bot.send_reply("/thinking only applies to OpenCode/Pi sessions.")
             return True
 
         self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])
@@ -182,10 +183,29 @@ class CommandHandler:
             self.bot.sessions.reset_claude_session(self.bot.session_name)
         elif engine == "opencode":
             self.bot.sessions.reset_opencode_session(self.bot.session_name)
+        elif engine == "pi":
+            self.bot.sessions.reset_pi_session(self.bot.session_name)
         else:
             self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
             return True
         self.bot.send_reply("Session reset.")
+        return True
+
+    @command("/compact")
+    async def compact(self, _body: str) -> bool:
+        """Compact Pi's context window."""
+        runner = self.bot.session.runner
+        if not isinstance(runner, PiRunner):
+            self.bot.send_reply("Not a Pi session — /compact only works with Pi.")
+            return True
+        if not self.bot.processing:
+            self.bot.send_reply("No active Pi process to compact.")
+            return True
+        sent = await runner.compact()
+        if sent:
+            self.bot.send_reply("Compacting context...")
+        else:
+            self.bot.send_reply("Failed to send compact (process not running).")
         return True
 
     @command("/ralph-cancel", "/ralph-stop")
@@ -270,7 +290,7 @@ class CommandHandler:
                 return True
 
             parent = self.bot.sessions.get(self.bot.session_name)
-            engine = parent.active_engine if parent else "opencode"
+            engine = parent.active_engine if parent else "pi"
             agent = parent.opencode_agent if parent else "bridge"
             model_id = parent.model_id if parent else None
 

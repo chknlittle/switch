@@ -48,7 +48,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
         "oc-codex": {
             "jid": os.getenv("OC_CODEX_JID", f"oc-codex@{domain}"),
             "password": os.getenv("OC_CODEX_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-gpt",
             "model_id": os.getenv("OC_CODEX_MODEL_ID", OPENCODE_MODEL_CODEX),
             "label": "Codex 5.3",
@@ -63,7 +63,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
         "oc-gpt": {
             "jid": os.getenv("OC_GPT_JID", f"oc-gpt@{domain}"),
             "password": os.getenv("OC_GPT_PASSWORD", ""),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-gpt",
             "model_id": os.getenv("OC_GPT_MODEL_ID", OPENCODE_MODEL_GPT),
             "label": "GPT 5.2",
@@ -71,17 +71,17 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
         "oc": {
             "jid": os.getenv("OC_JID", f"oc@{domain}"),
             "password": os.getenv("OC_PASSWORD", ""),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge",
-            "model_id": os.getenv("OC_MODEL_ID", OPENCODE_MODEL_DEFAULT),
-            "label": "GLM 4.7 Heretic",
+            "model_id": os.getenv("OC_MODEL_ID", ""),
+            "label": "Qwen 122B",
         },
         "oc-glm-zen": {
             "jid": os.getenv("OC_GLM_ZEN_JID", f"oc-glm-zen@{domain}"),
             "password": os.getenv(
                 "OC_GLM_ZEN_PASSWORD", os.getenv("XMPP_PASSWORD", "")
             ),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-zen",
             "model_id": os.getenv("OC_GLM_ZEN_MODEL_ID", OPENCODE_MODEL_ZEN),
             "label": "GLM 4.7 Zen",
@@ -89,7 +89,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
         "oc-gpt-or": {
             "jid": os.getenv("OC_GPT_OR_JID", f"oc-gpt-or@{domain}"),
             "password": os.getenv("OC_GPT_OR_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-gpt-or",
             "model_id": os.getenv("OC_GPT_OR_MODEL_ID", OPENCODE_MODEL_GPT_OR),
             "label": "GPT 5.2 OR",
@@ -99,7 +99,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             "password": os.getenv(
                 "OC_KIMI_CODING_PASSWORD", os.getenv("XMPP_PASSWORD", "")
             ),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-kimi-coding",
             "model_id": os.getenv(
                 "OC_KIMI_CODING_MODEL_ID", OPENCODE_MODEL_KIMI_CODING
@@ -141,7 +141,7 @@ def _normalize_dispatchers(payload: object, *, domain: str) -> dict[str, dict]:
         elif isinstance(item.get("password_env"), str):
             password = os.getenv(item.get("password_env", ""), "").strip()
 
-        engine = str(item.get("engine") or "opencode").strip().lower()
+        engine = str(item.get("engine") or "pi").strip().lower()
         agent = item.get("agent")
         if isinstance(agent, str):
             agent = agent.strip() or None

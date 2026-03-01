@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Protocol
 
 from src.runners import Runner, RunnerEvent
+from src.runners.debate.config import DebateConfig
 from src.runners.opencode.config import OpenCodeConfig
+from src.runners.pi.config import PiConfig
 from src.attachments import Attachment
 
 
@@ -21,6 +23,7 @@ class SessionState:
     active_engine: str
     claude_session_id: str | None
     opencode_session_id: str | None
+    pi_session_id: str | None
     opencode_agent: str
     model_id: str
     reasoning_mode: str
@@ -34,6 +37,8 @@ class SessionStorePort(Protocol):
     def update_claude_session_id(self, name: str, session_id: str) -> None: ...
 
     def update_opencode_session_id(self, name: str, session_id: str) -> None: ...
+
+    def update_pi_session_id(self, name: str, session_id: str) -> None: ...
 
 
 class MessageStorePort(Protocol):
@@ -49,6 +54,8 @@ class RunnerFactoryPort(Protocol):
         output_dir: Path,
         session_name: str,
         opencode_config: OpenCodeConfig | None = None,
+        pi_config: PiConfig | None = None,
+        debate_config: DebateConfig | None = None,
     ) -> Runner: ...
 
 

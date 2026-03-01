@@ -29,10 +29,12 @@ class OpenCodeEventProcessor:
         log_to_file: Callable[[str], None],
         log_response: Callable[[str], None] | None = None,
         model: str | None = None,
+        engine_name: str = "opencode",
     ):
         self._log_to_file = log_to_file
         self._log_response = log_response
         self._model = model
+        self._engine_name = engine_name
 
     def _handle_step_start(self, event: dict, state: RunState) -> Event | None:
         session_id = event.get("sessionID")
@@ -383,7 +385,7 @@ class OpenCodeEventProcessor:
             model_short = self._model.split("/", 1)[-1] or "?"
 
         return {
-            "engine": "opencode",
+            "engine": self._engine_name,
             "model": model_short,
             "session_id": state.session_id,
             "tool_count": state.tool_count,
@@ -435,10 +437,11 @@ class OpenCodeEventProcessor:
             state.cost = float(info.get("cost", 0) or 0)
 
     def make_fallback_error(self, state: RunState) -> Event:
+        label = self._engine_name.capitalize()
         if state.raw_output:
             preview = " | ".join(state.raw_output)
-            return ("error", f"OpenCode output (non-JSON): {preview}")
-        return ("error", "OpenCode exited without output")
+            return ("error", f"{label} output (non-JSON): {preview}")
+        return ("error", f"{label} exited without output")
 
     def parse_event(self, raw_event: dict, state: RunState) -> Event | None:
         event = coerce_event(raw_event)

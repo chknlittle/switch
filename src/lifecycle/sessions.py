@@ -68,7 +68,7 @@ async def create_session(
     manager: _SessionCreateManager,
     first_message: str,
     *,
-    engine: str = "opencode",
+    engine: str = "pi",
     opencode_agent: str | None = "bridge",
     model_id: str | None = None,
     label: str | None = None,
@@ -143,9 +143,13 @@ async def create_session(
             recipient_user, jid, "Sessions", manager.ejabberd_ctl, manager.xmpp_domain
         )
 
-    create_tmux_session(name, manager.working_dir)
+    # Each session gets its own working directory.
+    session_work_dir = Path(manager.working_dir) / "sessions" / name
+    session_work_dir.mkdir(parents=True, exist_ok=True)
 
-    effective_model = model_id or opencode_model_for_agent(opencode_agent)
+    create_tmux_session(name, str(session_work_dir))
+
+    effective_model = model_id
     manager.sessions.create(
         name=name,
         xmpp_jid=jid,
@@ -214,7 +218,7 @@ def _rollback_failed_create(
             bot.shutting_down = True
             bot.disconnect()
         except Exception:
-            pass
+            _log.warning("Failed to disconnect bot during rollback for %s", name, exc_info=True)
 
     try:
         delete_xmpp_account(
@@ -224,22 +228,22 @@ def _rollback_failed_create(
             _log,
         )
     except Exception:
-        pass
+        _log.warning("Failed to delete XMPP account during rollback for %s", name, exc_info=True)
 
     try:
         kill_tmux_session(name)
     except Exception:
-        pass
+        _log.warning("Failed to kill tmux session during rollback for %s", name, exc_info=True)
 
     try:
         manager.sessions.delete(name)
     except Exception:
-        pass
+        _log.warning("Failed to delete DB row during rollback for %s", name, exc_info=True)
 
     try:
         manager.notify_directory_sessions_changed(dispatcher_jid=dispatcher_jid)
     except Exception:
-        pass
+        _log.warning("Failed to notify directory during rollback for %s", name, exc_info=True)
 
 
 async def kill_session(

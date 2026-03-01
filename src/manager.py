@@ -69,18 +69,20 @@ class SessionManager:
         try:
             self.directory.notify_sessions_changed(dispatcher_jid=dispatcher_jid)
         except Exception:
-            pass
+            log.warning("Failed to notify directory of session change", exc_info=True)
 
     async def start_session_bot(
         self, name: str, jid: str, password: str, xmpp_recipient: str
     ) -> SessionBot:
         """Start a session bot."""
+        session_work_dir = os.path.join(self.working_dir, "sessions", name)
+        os.makedirs(session_work_dir, exist_ok=True)
         bot = SessionBot(
             name,
             jid,
             password,
             self.db,
-            self.working_dir,
+            session_work_dir,
             self.output_dir,
             xmpp_recipient,
             self.xmpp_domain,
@@ -97,9 +99,9 @@ class SessionManager:
         created = await lifecycle_create_session(
             self,
             message,
-            engine="opencode",
+            engine="pi",
             opencode_agent="bridge",
-            label="OpenCode",
+            label="Pi",
             dispatcher_jid=None,
         )
         if not created:
