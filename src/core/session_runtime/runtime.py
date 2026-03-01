@@ -102,6 +102,10 @@ class SessionRuntime:
         self._ralph_wake = asyncio.Event()
         self._ralph_injected_prompt: str | None = None
 
+        # Debate question-phase state machine.
+        # When set, the debate is waiting for the user's answer before running.
+        self._debate_state: dict | None = None
+
         # Per-engine cumulative usage for the lifetime of this Switch session.
         # This reflects total tokens/cost used, regardless of remote session resets.
         self._usage_tokens_total: dict[str, int] = {"claude": 0, "pi": 0, "debate": 0}
@@ -340,6 +344,11 @@ class SessionRuntime:
         if self._run_task and not self._run_task.done():
             cancelled_any = True
             self._run_task.cancel()
+
+        # Clear debate question-phase state on cancel.
+        if self._debate_state is not None:
+            self._debate_state = None
+            cancelled_any = True
 
         # Best-effort: unblock any waiting question futures.
         for fut in list(self._pending_question_answers.values()):
@@ -954,61 +963,113 @@ class SessionRuntime:
                 await self._emit(OutboundMessage("Cancelled."))
 
     async def _run_debate(self, session: SessionState, prompt: str) -> None:
-        self._create_runner_for_engine("debate", session)
+        # Phase 1: generate clarifying question (no debate state yet)
+        if self._debate_state is None:
+            self._create_runner_for_engine("debate", session)
 
-        accumulated = ""
-        handoff_plan: str | None = None
-        _buf: list[str] = []
-        _buf_len = 0
-        _FLUSH_THRESHOLD = 200
+            _buf: list[str] = []
+            _buf_len = 0
+            _FLUSH_THRESHOLD = 200
 
-        async def _flush_buf() -> None:
-            nonlocal _buf, _buf_len
-            if _buf:
-                await self._emit(OutboundMessage("".join(_buf)))
-                _buf = []
-                _buf_len = 0
+            async def _flush_q() -> None:
+                nonlocal _buf, _buf_len
+                if _buf:
+                    await self._emit(OutboundMessage("".join(_buf)))
+                    _buf = []
+                    _buf_len = 0
 
-        async for event_type, content in self.runner.run(prompt):
-            if self.shutting_down:
-                return
-            if event_type == "text" and isinstance(content, str):
-                accumulated += content
-                _buf.append(content)
-                _buf_len += len(content)
-                if _buf_len >= _FLUSH_THRESHOLD:
+            async for event_type, content in self.runner.generate_question(prompt):
+                if self.shutting_down:
+                    return
+                if event_type == "text" and isinstance(content, str):
+                    _buf.append(content)
+                    _buf_len += len(content)
+                    if _buf_len >= _FLUSH_THRESHOLD:
+                        await _flush_q()
+                elif event_type == "error":
+                    await _flush_q()
+                    await self._emit(OutboundMessage(f"Error: {content}"))
+                    return
+                elif event_type == "cancelled":
+                    await _flush_q()
+                    await self._emit(OutboundMessage("Cancelled."))
+                    return
+
+            await _flush_q()
+
+            # Park: save state and return — user sees the question, session goes idle.
+            self._debate_state = {
+                "phase": "awaiting_answers",
+                "original_prompt": prompt,
+            }
+            return
+
+        # Phase 2: user replied — run the full debate with enriched prompt
+        if self._debate_state.get("phase") == "awaiting_answers":
+            original_prompt = self._debate_state["original_prompt"]
+            self._debate_state = None  # Clear state before running
+
+            enriched_prompt = (
+                original_prompt
+                + "\n\n--- User's approach preference ---\n"
+                + prompt
+            )
+
+            self._create_runner_for_engine("debate", session)
+
+            accumulated = ""
+            handoff_plan: str | None = None
+            _buf2: list[str] = []
+            _buf2_len = 0
+            _FLUSH_THRESHOLD2 = 200
+
+            async def _flush_buf() -> None:
+                nonlocal _buf2, _buf2_len
+                if _buf2:
+                    await self._emit(OutboundMessage("".join(_buf2)))
+                    _buf2 = []
+                    _buf2_len = 0
+
+            async for event_type, content in self.runner.run(enriched_prompt):
+                if self.shutting_down:
+                    return
+                if event_type == "text" and isinstance(content, str):
+                    accumulated += content
+                    _buf2.append(content)
+                    _buf2_len += len(content)
+                    if _buf2_len >= _FLUSH_THRESHOLD2:
+                        await _flush_buf()
+                elif event_type == "result":
                     await _flush_buf()
-            elif event_type == "result":
-                await _flush_buf()
-                await self._send_result(
-                    [], [accumulated] if accumulated else [], content, engine="debate"
+                    await self._send_result(
+                        [], [accumulated] if accumulated else [], content, engine="debate"
+                    )
+                elif event_type == "handoff" and isinstance(content, str):
+                    handoff_plan = content
+                elif event_type == "error":
+                    await _flush_buf()
+                    await self._emit(OutboundMessage(f"Error: {content}"))
+                elif event_type == "cancelled":
+                    await _flush_buf()
+                    await self._emit(OutboundMessage("Cancelled."))
+
+            await _flush_buf()
+
+            # Auto-handoff: execute the final plan via the debate model.
+            if handoff_plan and not self.shutting_down:
+                debate_cfg = DebateConfig()
+                qwen_model = debate_cfg.resolve_model_a_name()
+                await self._emit(
+                    OutboundMessage(f"---\n\nHanding off to {qwen_model} for implementation...")
                 )
-            elif event_type == "handoff" and isinstance(content, str):
-                handoff_plan = content
-            elif event_type == "error":
-                await _flush_buf()
-                await self._emit(OutboundMessage(f"Error: {content}"))
-            elif event_type == "cancelled":
-                await _flush_buf()
-                await self._emit(OutboundMessage("Cancelled."))
-
-        await _flush_buf()
-
-        # Auto-handoff: execute the synthesized plan via the debate model.
-        if handoff_plan and not self.shutting_down:
-            debate_cfg = DebateConfig()
-            qwen_model = debate_cfg.resolve_model_a_name()
-            await self._emit(
-                OutboundMessage(f"---\n\nHanding off to {qwen_model} for implementation...")
-            )
-            self._create_runner_for_engine(
-                "pi", session,
-                pi_config=PiConfig(model=qwen_model, system_prompt=""),
-            )
-            await self._run_engine_generic(
-                "pi", session, handoff_plan,
-                skip_runner_create=True, result_engine="debate",
-            )
+                self._create_runner_for_engine(
+                    "pi", session,
+                    pi_config=PiConfig(model=qwen_model, system_prompt=""),
+                )
+                await self._run_engine_generic(
+                    "pi", session, handoff_plan,
+                    skip_runner_create=True, result_engine="debate",
+                )
 
     # ------------------------------------------------------------------
     # Tool progress helpers

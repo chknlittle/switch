@@ -288,7 +288,7 @@ Session contacts:
 
 - **claude**: Claude Code CLI — spawns `claude` subprocess per session
 - **pi**: Pi CLI (RPC mode) — spawns `pi --mode rpc` subprocess, communicates via stdin/stdout JSON lines. Supports any model/provider Pi supports (GPT, Qwen, Kimi, etc.)
-- **debate**: Multi-model debate — two models plan and critique, then a synthesizer produces the final answer
+- **debate**: Multi-model debate — Qwen asks a clarifying question first, then both models propose plans, Qwen synthesizes, GLM critiques, Qwen produces the final plan, and hands off to Pi for execution. Falls back to a single model if the other is unavailable.
 
 ## License
 
