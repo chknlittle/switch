@@ -303,12 +303,13 @@ class DirectoryBot(BaseXMPPBot):
                 if name_val:
                     session_el.set("name", name_val)
             pubsub = cast(Any, self["xep_0060"])
-            pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
+            result = pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
                 self.pubsub_service_jid,
                 node,
                 id=str(uuid.uuid4()),
                 payload=payload,
             )
+            self._consume_pubsub_result(result, node)
         except (IqTimeout, IqError) as exc:
             self.log.warning("PubSub publish failed for %s: %s", node, exc)
         except Exception as exc:
@@ -321,12 +322,13 @@ class DirectoryBot(BaseXMPPBot):
             payload.set("event", "update")
             payload.set("ts", str(int(time.time())))
             pubsub = cast(Any, self["xep_0060"])
-            pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
+            result = pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
                 self.pubsub_service_jid,
                 node,
                 id=str(uuid.uuid4()),
                 payload=payload,
             )
+            self._consume_pubsub_result(result, node)
         except IqTimeout:
             self.log.warning(
                 "PubSub publish timed out (node=%s service=%s)",
@@ -349,6 +351,22 @@ class DirectoryBot(BaseXMPPBot):
             )
         except Exception as exc:
             self.log.debug("Failed to publish pubsub update for %s: %s", node, exc)
+
+    def _consume_pubsub_result(self, result: object, node: str) -> None:
+        """If slixmpp returned a coroutine/Future, schedule it and log errors."""
+        if not (asyncio.iscoroutine(result) or isinstance(result, asyncio.Future)):
+            return
+        task = asyncio.ensure_future(result)
+
+        def _done(t: asyncio.Future) -> None:
+            try:
+                t.result()
+            except (IqTimeout, IqError) as exc:
+                self.log.warning("PubSub publish failed (node=%s): %s", node, exc)
+            except Exception:
+                self.log.debug("PubSub publish error for %s", node, exc_info=True)
+
+        task.add_done_callback(_done)
 
     def _ensure_pubsub_node(self, node: str) -> None:
         pubsub = cast(Any, self["xep_0060"])

@@ -29,15 +29,15 @@ class SessionState:
 class SessionStorePort(Protocol):
     def get(self, name: str) -> SessionState | None: ...
 
-    def update_last_active(self, name: str) -> None: ...
+    async def update_last_active(self, name: str) -> None: ...
 
-    def update_claude_session_id(self, name: str, session_id: str) -> None: ...
+    async def update_claude_session_id(self, name: str, session_id: str) -> None: ...
 
-    def update_pi_session_id(self, name: str, session_id: str) -> None: ...
+    async def update_pi_session_id(self, name: str, session_id: str) -> None: ...
 
 
 class MessageStorePort(Protocol):
-    def add(self, session_name: str, role: str, content: str, engine: str) -> None: ...
+    async def add(self, session_name: str, role: str, content: str, engine: str) -> None: ...
 
 
 class RunnerFactoryPort(Protocol):
@@ -68,7 +68,7 @@ class AttachmentPromptPort(Protocol):
 
 
 class RalphLoopStorePort(Protocol):
-    def create(
+    async def create(
         self,
         session_name: str,
         prompt: str,
@@ -77,7 +77,7 @@ class RalphLoopStorePort(Protocol):
         wait_seconds: float,
     ) -> int: ...
 
-    def update_progress(
+    async def update_progress(
         self,
         loop_id: int,
         current_iteration: int,

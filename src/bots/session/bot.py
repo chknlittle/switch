@@ -166,21 +166,21 @@ class SessionBot(BaseXMPPBot):
                 reasoning_mode=s.reasoning_mode,
             )
 
-        def update_last_active(self, name: str) -> None:
-            self._repo.update_last_active(name)
+        async def update_last_active(self, name: str) -> None:
+            await self._repo.update_last_active(name)
 
-        def update_claude_session_id(self, name: str, session_id: str) -> None:
-            self._repo.update_claude_session_id(name, session_id)
+        async def update_claude_session_id(self, name: str, session_id: str) -> None:
+            await self._repo.update_claude_session_id(name, session_id)
 
-        def update_pi_session_id(self, name: str, session_id: str) -> None:
-            self._repo.update_pi_session_id(name, session_id)
+        async def update_pi_session_id(self, name: str, session_id: str) -> None:
+            await self._repo.update_pi_session_id(name, session_id)
 
     class _MessagesAdapter(MessageStorePort):
         def __init__(self, repo: MessageRepository):
             self._repo = repo
 
-        def add(self, session_name: str, role: str, content: str, engine: str) -> None:
-            self._repo.add(session_name, role, content, engine)
+        async def add(self, session_name: str, role: str, content: str, engine: str) -> None:
+            await self._repo.add(session_name, role, content, engine)
 
     class _RunnerFactoryAdapter(RunnerFactoryPort):
         def create(
@@ -226,7 +226,7 @@ class SessionBot(BaseXMPPBot):
         def __init__(self, repo: RalphLoopRepository):
             self._repo = repo
 
-        def create(
+        async def create(
             self,
             session_name: str,
             prompt: str,
@@ -234,7 +234,7 @@ class SessionBot(BaseXMPPBot):
             completion_promise: str | None,
             wait_seconds: float,
         ) -> int:
-            return self._repo.create(
+            return await self._repo.create(
                 session_name,
                 prompt,
                 max_iterations=max_iterations,
@@ -242,14 +242,14 @@ class SessionBot(BaseXMPPBot):
                 wait_seconds=float(wait_seconds or 0.0),
             )
 
-        def update_progress(
+        async def update_progress(
             self,
             loop_id: int,
             current_iteration: int,
             total_cost: float,
             status: str = "running",
         ) -> None:
-            self._repo.update_progress(loop_id, current_iteration, total_cost, status)
+            await self._repo.update_progress(loop_id, current_iteration, total_cost, status)
 
     def _build_runtime(self) -> SessionRuntime:
         return SessionRuntime(
