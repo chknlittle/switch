@@ -24,17 +24,20 @@ log = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent.parent / "sessions.db"
 
 
+_write_locks: dict[int, asyncio.Lock] = {}
+
+
 def _shared_write_lock(conn: sqlite3.Connection) -> asyncio.Lock:
     """Return a single shared write lock for a given connection.
 
     All repositories sharing the same connection MUST use this lock so that
-    concurrent writes are serialized.  The lock is stored on the connection
-    object itself so every caller gets the same instance.
+    concurrent writes are serialized.  Keyed by connection id().
     """
-    lock = getattr(conn, "_switch_write_lock", None)
+    key = id(conn)
+    lock = _write_locks.get(key)
     if lock is None:
         lock = asyncio.Lock()
-        conn._switch_write_lock = lock  # type: ignore[attr-defined]
+        _write_locks[key] = lock
     return lock
 
 
