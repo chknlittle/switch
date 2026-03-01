@@ -82,11 +82,25 @@ class DirectoryBot(BaseXMPPBot):
     def on_disconnected(self, event):
         self.log.warning("Directory disconnected, reconnecting...")
         self.set_connected(False)
-        asyncio.ensure_future(self._reconnect())
+        if not getattr(self, "_reconnecting", False):
+            self._reconnecting = True
+            asyncio.ensure_future(self._reconnect())
 
     async def _reconnect(self):
-        await asyncio.sleep(5)
-        self.connect()
+        delay = 2
+        max_delay = 120
+        max_attempts = 50
+        for attempt in range(1, max_attempts + 1):
+            await asyncio.sleep(delay)
+            try:
+                self.connect()
+                self._reconnecting = False
+                return
+            except Exception:
+                self.log.warning("Directory reconnect attempt %d failed", attempt)
+                delay = min(delay * 2, max_delay)
+        self.log.error("Directory gave up reconnecting after %d attempts", max_attempts)
+        self._reconnecting = False
 
     # ---------------------------------------------------------------------
     # XEP-0030: disco#items

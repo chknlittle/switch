@@ -140,6 +140,33 @@ class SessionManager:
             self.dispatchers[name] = dispatcher
             log.info(f"Started dispatcher: {name} ({cfg['jid']})")
 
+    async def shutdown(self) -> None:
+        """Gracefully shut down all bots, runners, and subprocesses."""
+        log.info("Shutting down %d session(s)...", len(self.session_bots))
+        for name, bot in list(self.session_bots.items()):
+            try:
+                bot.cancel_operations(notify=False)
+                if hasattr(bot, '_runtime'):
+                    bot._runtime.shutdown()
+                bot.disconnect(wait=False)
+            except Exception:
+                log.warning("Error shutting down session %s", name, exc_info=True)
+
+        for name, dispatcher in list(self.dispatchers.items()):
+            try:
+                dispatcher.disconnect(wait=False)
+            except Exception:
+                log.warning("Error shutting down dispatcher %s", name, exc_info=True)
+
+        if self.directory:
+            try:
+                self.directory.disconnect(wait=False)
+            except Exception:
+                log.warning("Error shutting down directory", exc_info=True)
+
+        # Give XMPP stanzas a moment to flush.
+        await asyncio.sleep(0.5)
+
     async def restore_sessions(self):
         """Restore existing sessions from DB."""
         # Restoring every historical "active" session can create hundreds of bots,

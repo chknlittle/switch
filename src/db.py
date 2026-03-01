@@ -24,6 +24,20 @@ log = logging.getLogger(__name__)
 DB_PATH = Path(__file__).parent.parent / "sessions.db"
 
 
+def _shared_write_lock(conn: sqlite3.Connection) -> asyncio.Lock:
+    """Return a single shared write lock for a given connection.
+
+    All repositories sharing the same connection MUST use this lock so that
+    concurrent writes are serialized.  The lock is stored on the connection
+    object itself so every caller gets the same instance.
+    """
+    lock = getattr(conn, "_switch_write_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        conn._switch_write_lock = lock  # type: ignore[attr-defined]
+    return lock
+
+
 @dataclass
 class Session:
     """Session record."""
@@ -79,7 +93,7 @@ class SessionRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
-        self._write_lock = asyncio.Lock()
+        self._write_lock = _shared_write_lock(conn)
 
     def _row_to_session(self, row: sqlite3.Row) -> Session:
         return Session(
@@ -375,7 +389,7 @@ class RalphLoopRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
-        self._write_lock = asyncio.Lock()
+        self._write_lock = _shared_write_lock(conn)
 
     def _row_to_ralph_loop(self, row: sqlite3.Row) -> RalphLoop:
         return RalphLoop(
@@ -454,7 +468,7 @@ class MessageRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
-        self._write_lock = asyncio.Lock()
+        self._write_lock = _shared_write_lock(conn)
 
     def _row_to_message(self, row: sqlite3.Row) -> SessionMessage:
         return SessionMessage(
@@ -465,6 +479,9 @@ class MessageRepository:
             engine=row["engine"],
             created_at=row["created_at"],
         )
+
+    # Keep at most this many messages per session to prevent unbounded growth.
+    MAX_MESSAGES_PER_SESSION = 500
 
     async def add(
         self,
@@ -479,6 +496,17 @@ class MessageRepository:
                    (session_name, role, content, engine, created_at)
                    VALUES (?, ?, ?, ?, ?)""",
                 (session_name, role, content, engine, datetime.now().isoformat()),
+            )
+            # Trim old messages beyond the retention limit.
+            self.conn.execute(
+                """DELETE FROM session_messages
+                   WHERE session_name = ? AND id NOT IN (
+                       SELECT id FROM session_messages
+                       WHERE session_name = ?
+                       ORDER BY id DESC
+                       LIMIT ?
+                   )""",
+                (session_name, session_name, self.MAX_MESSAGES_PER_SESSION),
             )
             self.conn.commit()
 

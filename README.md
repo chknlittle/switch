@@ -116,6 +116,11 @@ Switch between engines mid-session with `/agent cc` or `/agent pi`.
 | `!<command>` | Run shell command |
 | `/cancel` | Cancel current run |
 | `/reset` | Reset context |
+| `/last` | Show last assistant message |
+| `/retry` | Re-run last user prompt |
+| `/recap` | Summarize session history |
+| `/context from:<name> [N]` | Load N messages from another session as context |
+| `/handoff <engine> [prompt]` | One-shot run through another engine |
 | `/compact` | Compact context (Pi only) |
 | `/agent cc\|pi` | Switch engine |
 | `/ralph <prompt>` | Start autonomous loop |
@@ -129,6 +134,9 @@ Switch between engines mid-session with `/agent cc` or `/agent pi`.
 - **Multi-session**: each conversation = separate XMPP contact
 - **Multi-engine**: Claude, Pi (any model), Debate — switchable per session
 - **Collaborative rooms**: invite participants into shared MUC sessions
+- **Debate approval gate**: debate plans pause for review before execution — reply "go" or send modifications
+- **Cross-session context**: `/context from:<session>` loads history from another session into the current one
+- **Engine handoff**: `/handoff pi <prompt>` for one-shot runs through a different engine
 - **Ralph loops**: autonomous iteration with cost tracking, completion promises, prompt injection
 - **Image attachments**: paste/upload in supported clients, served via local HTTP
 - **Rich meta messages**: `<meta xmlns="urn:switch:message-meta"/>` extension for tool blocks, run stats, questions, attachments — degrades gracefully in plain clients

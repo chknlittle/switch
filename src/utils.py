@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -306,7 +307,7 @@ def run_ejabberdctl(ejabberd_ctl: str, *args) -> tuple[bool, str]:
     """Run an ejabberdctl command via SSH or locally."""
     if ejabberd_ctl.startswith("ssh "):
         parts = ejabberd_ctl.split(maxsplit=2)
-        remote_cmd = parts[2] + " " + " ".join(args)
+        remote_cmd = parts[2] + " " + " ".join(shlex.quote(a) for a in args)
         cmd = ["ssh", parts[1], remote_cmd]
     else:
         cmd = ejabberd_ctl.split() + list(args)

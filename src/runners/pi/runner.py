@@ -42,7 +42,6 @@ class PiRunner(BaseRunner):
         self._process: asyncio.subprocess.Process | None = None
         self._cancelled = False
         self._stderr_task: asyncio.Task | None = None
-        self._stderr_output: list[bytes] = []
 
     def _build_command(self, session_id: str | None) -> list[str]:
         pi_bin = self._config.resolve_bin()
@@ -107,7 +106,7 @@ class PiRunner(BaseRunner):
                 chunk = await self._process.stderr.read(8192)
                 if not chunk:
                     break
-                self._stderr_output.append(chunk)
+                # Drain only — don't accumulate (unbounded memory growth).
         except (asyncio.CancelledError, ConnectionResetError):
             pass
 
@@ -189,7 +188,6 @@ class PiRunner(BaseRunner):
             )
 
             # Drain stderr in background to prevent pipe buffer deadlock.
-            self._stderr_output = []
             self._stderr_task = asyncio.create_task(self._drain_stderr())
 
             # Send the prompt.

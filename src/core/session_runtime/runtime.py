@@ -501,7 +501,17 @@ class SessionRuntime:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._events.emit(event))
+        task = loop.create_task(self._events.emit(event))
+        # prevent GC of the task and log errors instead of dropping them
+        task.add_done_callback(self._emit_task_done)
+
+    @staticmethod
+    def _emit_task_done(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            log.warning("emit_nowait failed: %s", exc)
 
     async def _emit(self, event: SessionEvent) -> None:
         await self._events.emit(event)

@@ -894,8 +894,8 @@ class SessionBot(BaseXMPPBot):
 
         if msg_type == "groupchat":
             # In MUC, we can't reliably get the real JID from the nick.
-            # Room membership is already gated by invitation, so allow it.
-            return True
+            # Shell commands are too dangerous to allow without identity verification.
+            return False
 
         sender_bare = str(msg["from"].bare)
         if owner_bare and sender_bare == owner_bare:

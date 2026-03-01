@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 from pathlib import Path
 
 from src.attachments import AttachmentStore
@@ -115,8 +116,15 @@ async def main():
         await manager.restore_sessions()
         await manager.start_dispatchers()
 
-        while True:
-            await asyncio.sleep(1)
+        # Graceful shutdown on SIGINT/SIGTERM.
+        shutdown_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, shutdown_event.set)
+
+        await shutdown_event.wait()
+        log.info("Signal received, shutting down gracefully...")
+        await manager.shutdown()
     finally:
         log.info("Closing database connection")
         try:
@@ -130,4 +138,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.info("Shutting down...")
+        pass
