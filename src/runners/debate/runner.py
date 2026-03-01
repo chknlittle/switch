@@ -73,6 +73,21 @@ class DebateRunner(BaseRunner):
         self._config = config or DebateConfig()
         self._cancelled = False
 
+    @staticmethod
+    def _thinking_summary(thinking_chunks: list[str]) -> str | None:
+        """Extract first sentence from thinking chunks for a brief indicator."""
+        text = "".join(thinking_chunks).strip()
+        if not text:
+            return None
+        # First sentence: split on . ! ? or newline
+        for i, ch in enumerate(text):
+            if ch in ".!?\n" and i > 10:
+                return f"[thinking: {text[:i + 1].strip()}]"
+        # No sentence boundary — truncate
+        if len(text) > 120:
+            return f"[thinking: {text[:120].strip()}...]"
+        return f"[thinking: {text}]"
+
     def _make_timeout(self) -> aiohttp.ClientTimeout:
         return aiohttp.ClientTimeout(
             total=None,
@@ -243,6 +258,8 @@ class DebateRunner(BaseRunner):
         messages = [{"role": "user", "content": question_prompt}]
 
         try:
+            _q_thinking: list[str] = []
+            _q_thinking_shown = False
             async for item in self._safe_stream_to_user(
                 primary_url, messages, primary_name
             ):
@@ -253,7 +270,15 @@ class DebateRunner(BaseRunner):
                     yield ("text", f"\n\n[{primary_name} error: {item}]")
                 else:
                     _kind, text = item
-                    yield ("text", text)
+                    if _kind == "thinking":
+                        _q_thinking.append(text)
+                    else:
+                        if _q_thinking and not _q_thinking_shown:
+                            _q_thinking_shown = True
+                            summary = self._thinking_summary(_q_thinking)
+                            if summary:
+                                yield ("text", f"{summary}\n\n")
+                        yield ("text", text)
 
             yield ("text", "\n\nReply with one or more numbers (e.g. 1,3) or your own answer.")
         except asyncio.CancelledError:
@@ -307,6 +332,7 @@ class DebateRunner(BaseRunner):
 
             # Stream primary plan
             plan_a = _StreamResult()
+            _a_thinking_shown = False
             async for item in self._safe_stream_to_user(
                 primary_url, messages, primary_name
             ):
@@ -322,8 +348,13 @@ class DebateRunner(BaseRunner):
                     if kind == "thinking":
                         plan_a.thinking.append(text)
                     else:
+                        if plan_a.thinking and not _a_thinking_shown:
+                            _a_thinking_shown = True
+                            summary = self._thinking_summary(plan_a.thinking)
+                            if summary:
+                                yield ("text", f"{summary}\n\n")
                         plan_a.content.append(text)
-                    yield ("text", text)
+                        yield ("text", text)
 
             self._log_response(f"[{primary_name} plan] {plan_a.content_text}")
 
@@ -336,8 +367,8 @@ class DebateRunner(BaseRunner):
             plan_b: _StreamResult = await b_task
             self._log_response(f"[{secondary_name} plan] {plan_b.content_text}")
 
-            if plan_b.full_text:
-                yield ("text", f"\n\n---\n\n## Plan B — {secondary_name}\n\n{plan_b.full_text}")
+            if plan_b.content_text:
+                yield ("text", f"\n\n---\n\n## Plan B — {secondary_name}\n\n{plan_b.content_text}")
             if plan_b.error:
                 yield ("text", f"\n\n[{secondary_name} error: {plan_b.error}]")
 
@@ -384,6 +415,7 @@ class DebateRunner(BaseRunner):
             yield ("text", f"\n\n---\n\n## Pre-final Synthesis — {primary_name}\n\n")
 
             pre_final = _StreamResult()
+            _pf_thinking_shown = False
             async for item in self._safe_stream_to_user(
                 primary_url, synthesis_messages, primary_name
             ):
@@ -398,8 +430,13 @@ class DebateRunner(BaseRunner):
                     if kind == "thinking":
                         pre_final.thinking.append(text)
                     else:
+                        if pre_final.thinking and not _pf_thinking_shown:
+                            _pf_thinking_shown = True
+                            summary = self._thinking_summary(pre_final.thinking)
+                            if summary:
+                                yield ("text", f"{summary}\n\n")
                         pre_final.content.append(text)
-                    yield ("text", text)
+                        yield ("text", text)
 
             self._log_response(f"[pre-final synthesis] {pre_final.content_text}")
 
@@ -426,6 +463,7 @@ class DebateRunner(BaseRunner):
             yield ("text", f"\n\n---\n\n## Critique — {secondary_name}\n\n")
 
             critique = _StreamResult()
+            _cr_thinking_shown = False
             async for item in self._safe_stream_to_user(
                 secondary_url, critique_messages, secondary_name
             ):
@@ -440,8 +478,13 @@ class DebateRunner(BaseRunner):
                     if kind == "thinking":
                         critique.thinking.append(text)
                     else:
+                        if critique.thinking and not _cr_thinking_shown:
+                            _cr_thinking_shown = True
+                            summary = self._thinking_summary(critique.thinking)
+                            if summary:
+                                yield ("text", f"{summary}\n\n")
                         critique.content.append(text)
-                    yield ("text", text)
+                        yield ("text", text)
 
             self._log_response(f"[critique] {critique.content_text}")
 
@@ -475,6 +518,7 @@ class DebateRunner(BaseRunner):
             yield ("text", f"\n\n---\n\n## Final Plan — {primary_name}\n\n")
 
             final_plan = _StreamResult()
+            _fp_thinking_shown = False
             async for item in self._safe_stream_to_user(
                 primary_url, final_messages, primary_name
             ):
@@ -489,8 +533,13 @@ class DebateRunner(BaseRunner):
                     if kind == "thinking":
                         final_plan.thinking.append(text)
                     else:
+                        if final_plan.thinking and not _fp_thinking_shown:
+                            _fp_thinking_shown = True
+                            summary = self._thinking_summary(final_plan.thinking)
+                            if summary:
+                                yield ("text", f"{summary}\n\n")
                         final_plan.content.append(text)
-                    yield ("text", text)
+                        yield ("text", text)
 
             self._log_response(f"[final plan] {final_plan.content_text}")
 
