@@ -26,14 +26,10 @@ if TYPE_CHECKING:
 class DispatcherBot(BaseXMPPBot):
     """Dispatcher bot that creates new session bots.
 
-    Each dispatcher is tied to a specific engine/agent:
-    - cc: Claude Code
-    - oc: OpenCode with GLM 4.7 Heretic (bridge agent)
-    - oc-gpt: OpenCode with GPT 5.2 (bridge-gpt agent)
-    - oc-codex: OpenCode with Codex 5.3 (bridge-gpt agent + model override)
-    - oc-glm-zen: OpenCode with GLM 4.7 via Zen (bridge-zen agent)
-    - oc-gpt-or: OpenCode with GPT 5.2 via OpenRouter (bridge-gpt-or agent)
-    - oc-kimi-coding: OpenCode with Kimi K2.5 via Kimi for Coding (bridge-kimi-coding agent)
+    Each dispatcher is tied to a specific engine:
+    - cc/claude: Claude Code
+    - pi: Pi (Qwen/GLM via local inference)
+    - debate: Multi-model debate
     """
 
     _WITH_FLAG_RE = re.compile(
@@ -52,7 +48,6 @@ class DispatcherBot(BaseXMPPBot):
         manager: "SessionManager | None" = None,
         *,
         engine: str = "pi",
-        opencode_agent: str | None = "bridge",
         model_id: str | None = None,
         label: str = "Pi",
     ):
@@ -68,7 +63,6 @@ class DispatcherBot(BaseXMPPBot):
         self.ejabberd_ctl = ejabberd_ctl
         self.manager: SessionManager | None = manager
         self.engine = engine
-        self.opencode_agent = opencode_agent
         self.model_id = model_id
         self.label = label
 
@@ -448,7 +442,6 @@ class DispatcherBot(BaseXMPPBot):
                 manager,
                 "",
                 engine=self.engine,
-                opencode_agent=self.opencode_agent,
                 model_id=self.model_id,
                 label=self.label,
                 name_hint="ralph",
@@ -515,7 +508,6 @@ class DispatcherBot(BaseXMPPBot):
             self.manager,
             message or first_message,
             engine=self.engine,
-            opencode_agent=self.opencode_agent,
             model_id=self.model_id,
             label=self.label,
             on_reserved=lambda n: self.send_reply(

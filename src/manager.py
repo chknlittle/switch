@@ -100,7 +100,6 @@ class SessionManager:
             self,
             message,
             engine="pi",
-            opencode_agent="bridge",
             label="Pi",
             dispatcher_jid=None,
         )
@@ -134,7 +133,6 @@ class SessionManager:
                 self.ejabberd_ctl,
                 manager=self,
                 engine=cfg["engine"],
-                opencode_agent=cfg["agent"],
                 model_id=cfg.get("model_id"),
                 label=cfg["label"],
             )

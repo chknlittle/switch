@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, Callable
 
-from src.engines import opencode_model_for_agent
 from src.helpers import (
     add_roster_subscription,
     create_tmux_session,
@@ -69,7 +68,6 @@ async def create_session(
     first_message: str,
     *,
     engine: str = "pi",
-    opencode_agent: str | None = "bridge",
     model_id: str | None = None,
     label: str | None = None,
     name_hint: str | None = None,
@@ -149,14 +147,12 @@ async def create_session(
 
     create_tmux_session(name, str(session_work_dir))
 
-    effective_model = model_id
     manager.sessions.create(
         name=name,
         xmpp_jid=jid,
         xmpp_password=password,
         tmux_name=name,
-        model_id=effective_model,
-        opencode_agent=opencode_agent or "bridge",
+        model_id=model_id,
         active_engine=engine,
         dispatcher_jid=dispatcher_jid,
         owner_jid=recipient,

@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from src.engines import OPENCODE_MODEL_DEFAULT, OPENCODE_MODEL_GPT
 
 DB_PATH = Path(__file__).parent.parent / "sessions.db"
 
@@ -29,10 +28,8 @@ class Session:
     xmpp_jid: str
     xmpp_password: str
     claude_session_id: str | None
-    opencode_session_id: str | None
     pi_session_id: str | None
     active_engine: str
-    opencode_agent: str
     model_id: str
     reasoning_mode: str
     dispatcher_jid: str | None
@@ -85,10 +82,8 @@ class SessionRepository:
             xmpp_jid=row["xmpp_jid"],
             xmpp_password=row["xmpp_password"],
             claude_session_id=row["claude_session_id"],
-            opencode_session_id=row["opencode_session_id"],
             pi_session_id=row["pi_session_id"] if "pi_session_id" in row.keys() else None,
             active_engine=row["active_engine"] or "pi",
-            opencode_agent=row["opencode_agent"] or "bridge",
             model_id=row["model_id"] or None,
             reasoning_mode=row["reasoning_mode"] or "normal",
             dispatcher_jid=row["dispatcher_jid"]
@@ -220,7 +215,6 @@ class SessionRepository:
         xmpp_password: str,
         tmux_name: str,
         model_id: str | None = None,
-        opencode_agent: str = "bridge",
         active_engine: str = "pi",
         reasoning_mode: str = "normal",
         dispatcher_jid: str | None = None,
@@ -233,8 +227,8 @@ class SessionRepository:
         self.conn.execute(
             """INSERT INTO sessions
                (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                model_id, opencode_agent, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                model_id, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 xmpp_jid,
@@ -243,7 +237,6 @@ class SessionRepository:
                 now,
                 now,
                 model_id,
-                opencode_agent,
                 active_engine,
                 reasoning_mode,
                 dispatcher_jid,
@@ -292,13 +285,6 @@ class SessionRepository:
         )
         self.conn.commit()
 
-    def update_opencode_session_id(self, name: str, session_id: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET opencode_session_id = ? WHERE name = ?",
-            (session_id, name),
-        )
-        self.conn.commit()
-
     def update_pi_session_id(self, name: str, session_id: str) -> None:
         self.conn.execute(
             "UPDATE sessions SET pi_session_id = ? WHERE name = ?",
@@ -309,13 +295,6 @@ class SessionRepository:
     def reset_claude_session(self, name: str) -> None:
         self.conn.execute(
             "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
-            (name,),
-        )
-        self.conn.commit()
-
-    def reset_opencode_session(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET opencode_session_id = NULL WHERE name = ?",
             (name,),
         )
         self.conn.commit()
@@ -586,19 +565,25 @@ def init_db() -> sqlite3.Connection:
         ("opencode_session_id", "TEXT"),
         ("active_engine", "TEXT DEFAULT 'pi'"),
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
-        ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_DEFAULT}'"),
+        ("model_id", "TEXT DEFAULT 'glm_vllm/glm-4.7-flash'"),
         ("reasoning_mode", "TEXT DEFAULT 'normal'"),
         ("dispatcher_jid", "TEXT"),
         ("owner_jid", "TEXT"),
         ("room_jid", "TEXT"),
         ("pi_session_id", "TEXT"),
     ]
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+    }
     for col_name, col_type in migrations:
+        if col_name in existing_cols:
+            continue
         try:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_type}")
             conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_owner_last_active ON sessions(owner_jid, last_active DESC)"
@@ -625,12 +610,18 @@ def init_db() -> sqlite3.Connection:
     ralph_migrations = [
         ("wait_seconds", "REAL DEFAULT 2.0"),
     ]
+    existing_ralph_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(ralph_loops)").fetchall()
+    }
     for col_name, col_type in ralph_migrations:
+        if col_name in existing_ralph_cols:
+            continue
         try:
             conn.execute(f"ALTER TABLE ralph_loops ADD COLUMN {col_name} {col_type}")
             conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
     conn.commit()
     return conn

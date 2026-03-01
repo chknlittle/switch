@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.runners.debate.config import DebateConfig
-from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
 
 if TYPE_CHECKING:
@@ -23,7 +22,6 @@ def create_runner(
     working_dir: str,
     output_dir: Path,
     session_name: str | None = None,
-    opencode_config: OpenCodeConfig | None = None,
     pi_config: PiConfig | None = None,
     debate_config: DebateConfig | None = None,
 ) -> Runner:
@@ -32,16 +30,6 @@ def create_runner(
     if engine == "claude":
         from src.runners.claude.runner import ClaudeRunner
         return ClaudeRunner(working_dir, output_dir, session_name)
-
-    if engine == "opencode":
-        from src.runners.opencode.runner import OpenCodeRunner
-
-        return OpenCodeRunner(
-            working_dir,
-            output_dir,
-            session_name,
-            config=opencode_config,
-        )
 
     if engine == "pi":
         from src.runners.pi.runner import PiRunner

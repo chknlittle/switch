@@ -1,4 +1,4 @@
-"""Base runner functionality shared by Claude and OpenCode runners."""
+"""Base runner functionality shared by runner implementations."""
 
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ class RunState:
     saw_error: bool = False
     raw_output: list[str] = field(default_factory=list)
 
-    # OpenCode server-mode can emit message events for both user and assistant.
+    # Server-mode runners can emit message events for both user and assistant.
     # Track roles by message ID so we can ignore user echoes.
     message_roles: Dict[str, str] = field(default_factory=dict)
 

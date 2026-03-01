@@ -2,7 +2,7 @@
 """
 Switch - XMPP AI Assistant Bridge
 
-Each OpenCode/Claude session gets its own XMPP account, appearing as a separate
+Each session gets its own XMPP account, appearing as a separate
 chat contact in the client.
 
 Dispatcher contacts are configured at runtime (supports 1..N dispatchers).

@@ -10,14 +10,6 @@ import os
 import subprocess
 from pathlib import Path
 
-from src.engines import (
-    OPENCODE_MODEL_CODEX,
-    OPENCODE_MODEL_DEFAULT,
-    OPENCODE_MODEL_GPT,
-    OPENCODE_MODEL_GPT_OR,
-    OPENCODE_MODEL_KIMI_CODING,
-    OPENCODE_MODEL_ZEN,
-)
 from slixmpp.clientxmpp import ClientXMPP
 from slixmpp.xmlstream import ET
 
@@ -50,7 +42,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             "password": os.getenv("OC_CODEX_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
             "engine": "pi",
             "agent": "bridge-gpt",
-            "model_id": os.getenv("OC_CODEX_MODEL_ID", OPENCODE_MODEL_CODEX),
+            "model_id": os.getenv("OC_CODEX_MODEL_ID", "openai/gpt-5.3-codex"),
             "label": "Codex 5.3",
         },
         "cc": {
@@ -65,7 +57,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             "password": os.getenv("OC_GPT_PASSWORD", ""),
             "engine": "pi",
             "agent": "bridge-gpt",
-            "model_id": os.getenv("OC_GPT_MODEL_ID", OPENCODE_MODEL_GPT),
+            "model_id": os.getenv("OC_GPT_MODEL_ID", "openai/gpt-5.2"),
             "label": "GPT 5.2",
         },
         "oc": {
@@ -83,7 +75,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             ),
             "engine": "pi",
             "agent": "bridge-zen",
-            "model_id": os.getenv("OC_GLM_ZEN_MODEL_ID", OPENCODE_MODEL_ZEN),
+            "model_id": os.getenv("OC_GLM_ZEN_MODEL_ID", "opencode/glm-4.7"),
             "label": "GLM 4.7 Zen",
         },
         "oc-gpt-or": {
@@ -91,7 +83,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             "password": os.getenv("OC_GPT_OR_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
             "engine": "pi",
             "agent": "bridge-gpt-or",
-            "model_id": os.getenv("OC_GPT_OR_MODEL_ID", OPENCODE_MODEL_GPT_OR),
+            "model_id": os.getenv("OC_GPT_OR_MODEL_ID", "openrouter/openai/gpt-5.2"),
             "label": "GPT 5.2 OR",
         },
         "oc-kimi-coding": {
@@ -102,7 +94,7 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             "engine": "pi",
             "agent": "bridge-kimi-coding",
             "model_id": os.getenv(
-                "OC_KIMI_CODING_MODEL_ID", OPENCODE_MODEL_KIMI_CODING
+                "OC_KIMI_CODING_MODEL_ID", "kimi-for-coding/kimi-k2.5"
             ),
             "label": "Kimi K2.5 Coding",
         },

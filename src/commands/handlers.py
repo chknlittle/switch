@@ -146,8 +146,8 @@ class CommandHandler:
             return True
 
         engine = (session.active_engine or "").strip().lower()
-        if engine not in {"opencode", "pi"}:
-            self.bot.send_reply("/thinking only applies to OpenCode/Pi sessions.")
+        if engine != "pi":
+            self.bot.send_reply("/thinking only applies to Pi sessions.")
             return True
 
         self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])
@@ -181,9 +181,7 @@ class CommandHandler:
         engine = (session.active_engine or "").strip().lower()
         if engine == "claude":
             self.bot.sessions.reset_claude_session(self.bot.session_name)
-        elif engine == "opencode":
-            self.bot.sessions.reset_opencode_session(self.bot.session_name)
-        elif engine == "pi":
+        elif engine in {"pi", "debate"}:
             self.bot.sessions.reset_pi_session(self.bot.session_name)
         else:
             self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
@@ -291,7 +289,6 @@ class CommandHandler:
 
             parent = self.bot.sessions.get(self.bot.session_name)
             engine = parent.active_engine if parent else "pi"
-            agent = parent.opencode_agent if parent else "bridge"
             model_id = parent.model_id if parent else None
 
             names: list[str] = []
@@ -300,7 +297,6 @@ class CommandHandler:
                     self.bot.manager,
                     "",
                     engine=engine,
-                    opencode_agent=agent,
                     model_id=model_id,
                     label=None,
                     name_hint="ralph",

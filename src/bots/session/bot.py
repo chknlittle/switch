@@ -1,4 +1,4 @@
-"""Session bot - one XMPP bot per OpenCode/Claude session."""
+"""Session bot - one XMPP bot per session."""
 
 from __future__ import annotations
 
@@ -45,7 +45,6 @@ from src.helpers import (
 )
 from src.runners import Runner, create_runner
 from src.runners.debate.config import DebateConfig
-from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
 from src.attachments import Attachment, AttachmentStore
 from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
@@ -162,9 +161,7 @@ class SessionBot(BaseXMPPBot):
                 name=s.name,
                 active_engine=s.active_engine,
                 claude_session_id=s.claude_session_id,
-                opencode_session_id=s.opencode_session_id,
                 pi_session_id=s.pi_session_id,
-                opencode_agent=s.opencode_agent,
                 model_id=s.model_id,
                 reasoning_mode=s.reasoning_mode,
             )
@@ -174,9 +171,6 @@ class SessionBot(BaseXMPPBot):
 
         def update_claude_session_id(self, name: str, session_id: str) -> None:
             self._repo.update_claude_session_id(name, session_id)
-
-        def update_opencode_session_id(self, name: str, session_id: str) -> None:
-            self._repo.update_opencode_session_id(name, session_id)
 
         def update_pi_session_id(self, name: str, session_id: str) -> None:
             self._repo.update_pi_session_id(name, session_id)
@@ -196,7 +190,6 @@ class SessionBot(BaseXMPPBot):
             working_dir: str,
             output_dir: Path,
             session_name: str,
-            opencode_config: OpenCodeConfig | None = None,
             pi_config: PiConfig | None = None,
             debate_config: DebateConfig | None = None,
         ) -> Runner:
@@ -205,7 +198,6 @@ class SessionBot(BaseXMPPBot):
                 working_dir=working_dir,
                 output_dir=output_dir,
                 session_name=session_name,
-                opencode_config=opencode_config,
                 pi_config=pi_config,
                 debate_config=debate_config,
             )
@@ -471,7 +463,7 @@ class SessionBot(BaseXMPPBot):
     @staticmethod
     def _infer_meta_tool_from_summary(summary: str) -> str | None:
         """Best-effort mapping from tool summary text to meta.tool."""
-        # OpenCode tool summaries look like: "[tool:bash ...]".
+        # Pi tool summaries look like: "[tool:bash ...]".
         if summary.startswith("[tool:"):
             end = summary.find("]")
             head = summary[:end] if end != -1 else summary
@@ -479,7 +471,7 @@ class SessionBot(BaseXMPPBot):
             tool = inner.split(maxsplit=1)[0].strip()
             return tool or None
 
-        # OpenCode tool-result summaries look like: "[tool-result:bash ...]".
+        # Pi tool-result summaries look like: "[tool-result:bash ...]".
         if summary.startswith("[tool-result:"):
             end = summary.find("]")
             head = summary[:end] if end != -1 else summary
@@ -513,8 +505,8 @@ class SessionBot(BaseXMPPBot):
             cancelled_any = True
             self.runner.cancel()
 
-        # If we're using Helga vLLM via the OpenCode server, cancellation at the
-        # OpenCode layer doesn't always stop the underlying vLLM generation.
+        # If we're using Helga vLLM, cancellation at the runner layer doesn't
+        # always stop the underlying vLLM generation.
         # For those cases, do a best-effort hard abort.
         if cancelled_any:
             self._maybe_hard_abort_vllm()
@@ -525,7 +517,7 @@ class SessionBot(BaseXMPPBot):
         """Best-effort: restart Helga vLLM to abort the active generation.
 
         This is intentionally conservative:
-        - Only triggers for OpenCode sessions
+        - Only triggers for Pi sessions using vLLM-backed models
         - Only triggers when the selected model is our vLLM-backed GLM provider
         - Cooldown + single in-flight task to avoid restart storms
         """
@@ -538,7 +530,7 @@ class SessionBot(BaseXMPPBot):
         if not session:
             return
         engine = (session.active_engine or "").strip().lower()
-        if engine not in {"opencode", "pi"}:
+        if engine not in {"pi", "debate"}:
             return
         model_id = (session.model_id or "").strip()
         if not model_id.startswith("glm_vllm/"):
@@ -785,8 +777,11 @@ class SessionBot(BaseXMPPBot):
         if not is_scheduled and await self.commands.handle(body):
             return
 
-        # Shell commands
+        # Shell commands — only session owner or collaborators may execute.
         if body.startswith("!"):
+            if not self._is_shell_authorized(msg):
+                self.send_reply("Shell commands are restricted to the session owner and collaborators.")
+                return
             await self.run_shell_command(body[1:].strip())
             return
 
@@ -887,6 +882,27 @@ class SessionBot(BaseXMPPBot):
     # -------------------------------------------------------------------------
     # Shell commands
     # -------------------------------------------------------------------------
+
+    def _is_shell_authorized(self, msg) -> bool:
+        """Check if the message sender is the session owner or a collaborator."""
+        session = self.sessions.get(self.session_name)
+        if not session:
+            return False
+
+        owner_bare = (session.owner_jid or "").split("/", 1)[0]
+        msg_type = msg["type"]
+
+        if msg_type == "groupchat":
+            # In MUC, we can't reliably get the real JID from the nick.
+            # Room membership is already gated by invitation, so allow it.
+            return True
+
+        sender_bare = str(msg["from"].bare)
+        if owner_bare and sender_bare == owner_bare:
+            return True
+
+        collaborators = self.sessions.list_collaborators(self.session_name)
+        return sender_bare in collaborators
 
     async def run_shell_command(self, cmd: str):
         """Run shell command, send output, inform agent."""
@@ -995,7 +1011,7 @@ class SessionBot(BaseXMPPBot):
     def answer_pending_question(
         self, answer: object, *, request_id: str | None = None
     ) -> bool:
-        """Answer a pending OpenCode question via XMPP meta reply."""
+        """Answer a pending question via XMPP meta reply."""
         return self._runtime.answer_question(answer, request_id=request_id)
 
     # -------------------------------------------------------------------------
@@ -1014,7 +1030,6 @@ class SessionBot(BaseXMPPBot):
 
         parent = self.sessions.get(self.session_name)
         engine = parent.active_engine if parent else "pi"
-        agent = parent.opencode_agent if parent else "bridge"
         model_id = parent.model_id if parent else None
         owner_jid = parent.owner_jid if parent else None
         collaborators: list[str] | None = None
@@ -1026,7 +1041,6 @@ class SessionBot(BaseXMPPBot):
             self.manager,
             first_message,
             engine=engine,
-            opencode_agent=agent,
             model_id=model_id,
             label=None,
             name_hint=f"{self.session_name}-sib",
