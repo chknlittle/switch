@@ -43,30 +43,32 @@ flowchart LR
             subgraph Orchestrators["Orchestrator Contacts"]
                 direction TB
                 CC["cc@...<br/>(Claude Code)"]
-                OC["oc@...<br/>(OpenCode GLM 4.7 Heretic)"]
-                OCGPT["oc-gpt@...<br/>(OpenCode GPT 5.2)"]
+                PI["oc-gpt@...<br/>(Pi — GPT 5.2)"]
+                DB["debate@...<br/>(Debate)"]
             end
 
             Sessions["Session Bots<br/>(task-name@...)"]
 
-            subgraph Engines["AI CLIs"]
+            subgraph Engines["AI Engines"]
                 direction TB
-                OpenCode["OpenCode CLI"]
                 Claude["Claude CLI"]
+                PiCLI["Pi CLI (RPC)"]
+                Debate["Debate (multi-model)"]
             end
         end
     end
 
     Client <-->|"Tailscale IP"| XMPP
     XMPP <--> CC
-    XMPP <--> OC
-    XMPP <--> OCGPT
+    XMPP <--> PI
+    XMPP <--> DB
     XMPP <--> Sessions
-    Sessions --> OpenCode
     Sessions --> Claude
+    Sessions --> PiCLI
+    Sessions --> Debate
 
     classDef orchestrator fill:#f5f5e8,stroke:#8a7d60,color:#2c2c2c;
-    class CC,OC,OCGPT orchestrator;
+    class CC,PI,DB orchestrator;
 ```
 <!-- /DIAGRAM:system -->
 
@@ -102,12 +104,13 @@ Designed to run on a dedicated Linux machine (old laptop, mini PC, home server) 
 ## Features
 
 - **Multi-session**: Each conversation is a separate chat contact
-- **Multiple orchestrators**: Multiple contacts for different AI backends
+- **Multiple orchestrators**: Multiple contacts for different AI backends (Claude, Pi, Debate)
+- **Collaborative room sessions**: Invite multiple participants into a shared MUC session (`/new --with`)
 - **Mobile-friendly**: Works with any open source chat app (Conversations, Monal, Gajim, Dino, etc.)
 - **Session persistence**: Resume conversations after restarts
 - **Rich message metadata**: tool/tool-result blocks, run stats, questions, and attachments (custom XMPP meta extension)
 - **Image attachments**: paste/drop/upload in supported clients; Switch downloads and serves images via a tiny HTTP server
-- **Ralph loops**: Autonomous iteration for long-running tasks
+- **Ralph loops**: Autonomous iteration for long-running tasks (`/ralph` from dispatcher or session)
 - **Shell access**: Run commands directly from chat
 - **Busy handling**: Messages queue while a session is running; spawn a sibling session with `+...`
 - **Local memory vault**: Gitignored notes under `memory/`
@@ -128,40 +131,20 @@ cp .env.example .env
 
 ### Symlink Agent Instructions (Required)
 
-These symlinks let Claude Code and OpenCode find their instructions from anywhere on the system:
+This symlink lets Claude Code find its instructions from anywhere on the system:
 
 ```bash
-# Agent instructions (AGENTS.md) - required for both Claude Code and OpenCode
 ln -sf ~/switch/AGENTS.md ~/CLAUDE.md       # Claude Code looks here
-ln -sf ~/switch/AGENTS.md ~/AGENTS.md       # OpenCode looks here
-
-# OpenCode config (custom models and agent profiles)
-mkdir -p ~/.config/opencode
-ln -sf ~/switch/.opencode/opencode.json ~/.config/opencode/config.json
 ```
-
-### Sync OpenCode Skills (Required for OpenCode)
-
-Skills (spawn-session, close-sessions, memory, etc.) must be synced to OpenCode format:
-
-```bash
-# Sync skills from ~/switch/skills/ to ~/.config/opencode/skill/
-python ~/switch/scripts/sync-to-opencode.py
-```
-
-Re-run this command after adding or modifying skills in `~/switch/skills/`.
 
 ### Verify Setup
 
 ```bash
-ls -la ~/CLAUDE.md ~/AGENTS.md ~/.config/opencode/config.json ~/.config/opencode/skill/
+ls -la ~/CLAUDE.md
 ```
 
 You should see:
 - `~/CLAUDE.md` → `~/switch/AGENTS.md`
-- `~/AGENTS.md` → `~/switch/AGENTS.md`
-- `~/.config/opencode/config.json` → `~/switch/.opencode/opencode.json`
-- `~/.config/opencode/skill/` containing folders like `spawn-session/`, `close-sessions/`, etc.
 
 ### Run
 
@@ -169,37 +152,15 @@ You should see:
 uv run python -m src.bridge
 ```
 
-If you're using OpenCode orchestrators (`oc@...`, `oc-gpt@...`, etc.), make sure the OpenCode server is running locally (Switch connects over HTTP + SSE).
-
 ## Running as Services (systemd --user)
-
-Switch is commonly run as a user service alongside an OpenCode server:
 
 ```bash
 # Start/restart Switch (XMPP bridge)
 systemctl --user restart switch
 
-# Start/restart OpenCode server (HTTP + SSE)
-systemctl --user restart opencode
-
 # Follow logs
 journalctl --user -u switch -f
-journalctl --user -u opencode -f
 ```
-
-## OpenCode Streaming and Progress Updates
-
-OpenCode sessions stream output and tool events over SSE. If a session looks "stuck", it's often one of:
-
-- **No SSE events** (progress/tool updates don't arrive)
-- **Long-running calls** (you may only get a final response unless tool progress is enabled)
-
-Useful env vars (set in `.env`, then restart `switch.service`):
-
-- `OPENCODE_HTTP_TIMEOUT_S`: Total HTTP timeout for long runs
-- `OPENCODE_SSE_CONNECT_TIMEOUT_S`: How long to wait when establishing the SSE stream
-- `SWITCH_LOG_TOOL_INPUT=1`: Include tool inputs (e.g., bash commands) in progress pings
-- `SWITCH_LOG_TOOL_INPUT_MAX`: Cap tool-input preview length
 
 ## Rich Rendering (Meta Messages)
 
@@ -234,14 +195,15 @@ Useful env vars:
 
 Each AI backend shows up as a contact in your chat app. Message any of them to start a session:
 
-| Contact | Backend | Model |
-|---------|---------|-------|
-| `cc@...` | Claude Code | Claude Opus |
-| `oc@...` | OpenCode | GLM 4.7 Heretic |
-| `oc-gpt@...` | OpenCode | GPT 5.2 |
-| `oc-glm-zen@...` | OpenCode | GLM 4.7 (Zen) |
-| `oc-gpt-or@...` | OpenCode | GPT 5.2 (OpenRouter) |
-| `oc-kimi-coding@...` | OpenCode | Kimi K2.5 (Kimi for Coding) |
+| Contact | Engine | Description |
+|---------|--------|-------------|
+| `cc@...` | Claude | Claude Code CLI |
+| `oc-gpt@...` | Pi | GPT 5.2 (via Pi RPC) |
+| `oc@...` | Pi | Qwen 122B (via Pi RPC) |
+| `oc-codex@...` | Pi | Codex 5.3 (via Pi RPC) |
+| `oc-kimi-coding@...` | Pi | Kimi K2.5 Coding (via Pi RPC) |
+
+Dispatchers are configurable via `SWITCH_DISPATCHERS_JSON` or `SWITCH_DISPATCHERS_FILE` env vars. The table above shows the legacy defaults.
 
 Sessions appear as separate contacts (e.g., `fix-auth-bug@...`) so you can have multiple conversations in parallel.
 
@@ -253,8 +215,7 @@ flowchart LR
     subgraph Orchestrators["Orchestrator Contacts"]
         direction TB
         cc["cc@..."]
-        oc["oc@..."]
-        ocgpt["oc-gpt@..."]
+        pi["oc-gpt@..."]
     end
 
     subgraph Sessions["Session Contacts"]
@@ -265,16 +226,14 @@ flowchart LR
     end
 
     Client --> cc
-    Client --> oc
-    Client --> ocgpt
+    Client --> pi
     Client --> Sessions
 
     cc --> Claude[Claude Code]
-    oc --> GLM["OpenCode (GLM 4.7 Heretic)"]
-    ocgpt --> GPT["OpenCode (GPT 5.2)"]
+    pi --> PiGPT["Pi (GPT 5.2)"]
 
     s1 --> Claude
-    s2 --> GLM
+    s2 --> PiGPT
     s3 --> Claude
 ```
 
@@ -284,10 +243,14 @@ Dispatcher (orchestrator) contacts:
 
 | Action | What to send |
 |--------|-------------|
-| Create a new session | Any message to `cc@...`, `oc@...`, `oc-gpt@...`, etc. |
+| Create a new session | Any message to `cc@...`, `oc-gpt@...`, etc. |
 | List sessions | `/list` |
 | Show recent sessions | `/recent` |
 | Kill a session | `/kill <name>` |
+| Shared room session | `/new --with <jid[,jid]> <prompt>` |
+| Commit and push | `/commit [host:]<repo>` |
+| Start a Ralph loop | `/ralph <prompt>` |
+| Help | `/help` |
 
 Session contacts:
 
@@ -297,7 +260,10 @@ Session contacts:
 | Cancel current run | `/cancel` |
 | Peek logs | `/peek [N]` |
 | Reset context | `/reset` |
-| Switch engine | `/agent oc` or `/agent cc` |
+| Compact context (Pi only) | `/compact` |
+| Switch engine | `/agent cc` or `/agent pi` |
+| Start Ralph loop | `/ralph <prompt>` |
+| Ralph status/cancel | `/ralph-status`, `/ralph-cancel` |
 | Spawn sibling session (when busy) | `+<message>` |
 
 ## Documentation
@@ -313,16 +279,16 @@ Session contacts:
 - Dedicated Linux machine (bare metal preferred)
 - Python 3.11+
 - [ejabberd](https://www.ejabberd.im/) (open source chat server)
-- OpenCode CLI and/or Claude Code CLI
+- Claude Code CLI
+- Pi CLI (for Pi engine dispatchers)
 - tmux
 - [Tailscale](https://tailscale.com/) (recommended for secure remote access)
 
-## Models
+## Engines
 
-- `cc`: Claude (Claude Code CLI)
-- `oc`: GLM 4.7 Heretic (OpenCode)
-- `oc-gpt`: GPT 5.2 (OpenCode)
-- `oc-kimi-coding`: Kimi K2.5 (OpenCode)
+- **claude**: Claude Code CLI — spawns `claude` subprocess per session
+- **pi**: Pi CLI (RPC mode) — spawns `pi --mode rpc` subprocess, communicates via stdin/stdout JSON lines. Supports any model/provider Pi supports (GPT, Qwen, Kimi, etc.)
+- **debate**: Multi-model debate — two models plan and critique, then a synthesizer produces the final answer
 
 ## License
 
