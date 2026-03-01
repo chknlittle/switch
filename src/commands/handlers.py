@@ -342,6 +342,154 @@ class CommandHandler:
         )
         return True
 
+    @command("/last")
+    async def last(self, _body: str) -> bool:
+        """Show last assistant message."""
+        messages = self.bot.messages.list_recent(self.bot.session_name, limit=10)
+        for msg in messages:  # newest-first (ORDER BY id DESC)
+            if msg.role == "assistant" and msg.content.strip():
+                self.bot.send_reply(msg.content)
+                return True
+        self.bot.send_reply("No assistant messages in this session.")
+        return True
+
+    @command("/retry")
+    async def retry(self, _body: str) -> bool:
+        """Re-run last user prompt."""
+        if self.bot.processing:
+            self.bot.send_reply("Already processing. /cancel first, then /retry.")
+            return True
+        if self.bot.session.debate_awaiting():
+            self.bot.send_reply("Debate is waiting for your input. Reply directly or /cancel first.")
+            return True
+        messages = self.bot.messages.list_recent(self.bot.session_name, limit=20)
+        for msg in messages:
+            if msg.role == "user" and msg.content.strip():
+                self.bot.send_reply(f"Retrying: {msg.content[:80]}...")
+                await self.bot.session.enqueue(
+                    msg.content, None,
+                    trigger_response=True, scheduled=False, wait=False,
+                )
+                return True
+        self.bot.send_reply("No user messages to retry.")
+        return True
+
+    @command("/recap")
+    async def recap(self, _body: str) -> bool:
+        """Summarize session history."""
+        if self.bot.processing:
+            self.bot.send_reply("Already processing. Try /recap after current work completes.")
+            return True
+        if self.bot.session.debate_awaiting():
+            self.bot.send_reply("Debate is waiting for your input. Reply directly or /cancel first.")
+            return True
+        messages = self.bot.messages.list_recent(self.bot.session_name, limit=40)
+        if not messages:
+            self.bot.send_reply("No messages in this session.")
+            return True
+
+        # Chronological order, truncate long messages
+        messages = list(reversed(messages))
+        lines = []
+        for msg in messages:
+            prefix = "User" if msg.role == "user" else "Assistant"
+            content = msg.content[:500] + ("..." if len(msg.content) > 500 else "")
+            lines.append(f"{prefix}: {content}")
+
+        recap_prompt = (
+            "Summarize this conversation concisely. "
+            "Key decisions, open questions, current status. Under 300 words.\n\n"
+            "---\n" + "\n\n".join(lines) + "\n---"
+        )
+        self.bot.send_reply("Generating recap...")
+        await self.bot.session.enqueue(
+            recap_prompt, None,
+            trigger_response=True, scheduled=False, wait=False,
+        )
+        return True
+
+    @command("/context", exact=False)
+    async def context(self, body: str) -> bool:
+        """Inject cross-session history."""
+        parts = body.strip().split()
+        source_name = None
+        limit = 20
+
+        for part in parts[1:]:
+            if part.startswith("from:"):
+                source_name = part[5:]
+            else:
+                try:
+                    limit = int(part)
+                except ValueError:
+                    pass
+
+        if not source_name:
+            self.bot.send_reply("Usage: /context from:<session-name> [limit]")
+            return True
+
+        source = self.bot.sessions.get(source_name)
+        if not source:
+            self.bot.send_reply(f"Session '{source_name}' not found.")
+            return True
+
+        messages = self.bot.messages.list_recent(source_name, limit=limit)
+        if not messages:
+            self.bot.send_reply(f"No messages in '{source_name}'.")
+            return True
+
+        messages = list(reversed(messages))  # chronological
+        lines = []
+        for msg in messages:
+            prefix = "User" if msg.role == "user" else "Assistant"
+            content = msg.content[:800] + ("..." if len(msg.content) > 800 else "")
+            lines.append(f"{prefix}: {content}")
+
+        context_text = (
+            f"[Context from session '{source_name}' — {len(messages)} messages. "
+            "Use this as background for the conversation.]\n\n"
+            + "\n\n".join(lines)
+        )
+
+        self.bot.session.set_context_prefix(context_text)
+        self.bot.send_reply(
+            f"Loaded {len(messages)} messages from '{source_name}'. "
+            "Your next message will include this context."
+        )
+        return True
+
+    @command("/handoff", exact=False)
+    async def handoff(self, body: str) -> bool:
+        """Hand off to another engine."""
+        parts = body.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude")
+            return True
+
+        engine = normalize_engine(parts[1])
+        if not engine or engine == "debate":
+            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude")
+            return True
+
+        if self.bot.processing:
+            self.bot.send_reply("Already processing. /cancel first.")
+            return True
+
+        prompt = parts[2].strip() if len(parts) > 2 else None
+        if not prompt:
+            messages = self.bot.messages.list_recent(self.bot.session_name, limit=10)
+            for msg in messages:
+                if msg.role == "assistant" and msg.content.strip():
+                    prompt = msg.content
+                    break
+            if not prompt:
+                self.bot.send_reply("No prompt and no assistant messages to hand off.")
+                return True
+
+        self.bot.send_reply(f"Handing off to {engine}...")
+        await self.bot.session.run_handoff(engine, prompt)
+        return True
+
     @command("/ralph-look", "/ralphlook", exact=False)
     async def ralph_look(self, body: str) -> bool:
         """Start a prompt-only Ralph loop (fresh context every iteration)."""

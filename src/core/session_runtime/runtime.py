@@ -102,6 +102,12 @@ class SessionRuntime:
         self._ralph_wake = asyncio.Event()
         self._ralph_injected_prompt: str | None = None
 
+        # Pending handoff: (engine, prompt) set by run_handoff, consumed by _process_one.
+        self._pending_handoff: tuple[str, str] | None = None
+
+        # Context prefix: prepended to the next real user prompt, then cleared.
+        self._context_prefix: str | None = None
+
         # Debate question-phase state machine.
         # When set, the debate is waiting for the user's answer before running.
         self._debate_state: dict | None = None
@@ -307,6 +313,33 @@ class SessionRuntime:
         if done is not None:
             await done
 
+    def set_context_prefix(self, text: str) -> None:
+        """Store context to prepend to the next real user prompt."""
+        self._context_prefix = text
+
+    def debate_awaiting(self) -> bool:
+        """True if the debate state machine is waiting for user input."""
+        return self._debate_state is not None
+
+    async def run_handoff(self, target_engine: str, prompt: str) -> None:
+        """Run a prompt through a specific engine without changing the session's active engine.
+
+        Routes through the queue via a sentinel work item so it serializes
+        properly with other messages (no concurrent runner access).
+        """
+        if self.shutting_down:
+            return
+
+        # Stash handoff params; the loop will pick them up from the sentinel.
+        self._pending_handoff = (target_engine, prompt)
+        try:
+            await self.enqueue(
+                "", None,
+                trigger_response=True, scheduled=False, wait=True,
+            )
+        finally:
+            self._pending_handoff = None
+
     def cancel_queued(self) -> bool:
         """Drop queued items; ignore anything already dequeued."""
         self._generation += 1
@@ -344,6 +377,14 @@ class SessionRuntime:
         if self._run_task and not self._run_task.done():
             cancelled_any = True
             self._run_task.cancel()
+
+        # Clear pending handoff on cancel.
+        if self._pending_handoff is not None:
+            self._pending_handoff = None
+            cancelled_any = True
+
+        # Clear context prefix on cancel.
+        self._context_prefix = None
 
         # Clear debate question-phase state on cancel.
         if self._debate_state is not None:
@@ -505,6 +546,30 @@ class SessionRuntime:
             await self._run_ralph(cfg)
             return
 
+        # Handoff sentinel: run_handoff enqueues an empty body with _pending_handoff set.
+        # Check empty body to avoid consuming the handoff if a real message was queued first.
+        if self._pending_handoff is not None and not item.body:
+            target_engine, handoff_prompt = self._pending_handoff
+            self._pending_handoff = None  # Consume immediately
+            self._context_prefix = None  # Don't leak context into handoff
+            session = self._sessions.get(self.session_name)
+            if not session:
+                await self._emit(OutboundMessage("Session not found."))
+                return
+            # Store the handoff prompt so conversation history isn't orphaned.
+            await self._messages.add(
+                self.session_name, "user", handoff_prompt[:500], target_engine,
+            )
+            try:
+                self._create_runner_for_engine(target_engine, session)
+                await self._run_engine_generic(
+                    target_engine, session, handoff_prompt,
+                    skip_runner_create=True, ephemeral=True,
+                )
+            except Exception as e:
+                await self._emit(OutboundMessage(f"Handoff error: {type(e).__name__}: {e}"))
+            return
+
         session = self._sessions.get(self.session_name)
         if not session:
             await self._emit(OutboundMessage("Session not found in database."))
@@ -528,8 +593,18 @@ class SessionRuntime:
             return
 
         engine = (session.active_engine or "pi").strip().lower()
+
+        # Prepend any stored context (from /context command) to the prompt.
+        # Don't apply to debate awaiting states — those operate on raw user input.
+        prompt_for_engine = body_for_history
+        if self._context_prefix and not (
+            engine == "debate" and self._debate_state is not None
+        ):
+            prompt_for_engine = self._context_prefix + "\n\n" + body_for_history
+            self._context_prefix = None
+
         self._run_task = asyncio.create_task(
-            self._run_engine(engine=engine, session=session, prompt=body_for_history)
+            self._run_engine(engine=engine, session=session, prompt=prompt_for_engine)
         )
         try:
             await self._run_task
@@ -919,13 +994,18 @@ class SessionRuntime:
         *,
         skip_runner_create: bool = False,
         result_engine: str | None = None,
+        ephemeral: bool = False,
     ) -> None:
-        """Unified event loop for claude and pi engines."""
+        """Unified event loop for claude and pi engines.
+
+        If ephemeral=True, don't save session_id (used by /handoff to avoid
+        overwriting the target engine's session state).
+        """
         if not skip_runner_create:
             self._create_runner_for_engine(engine, session)
         label = result_engine or engine
         accumulate_text = engine != "claude"
-        session_id = self._session_id_for_engine(engine, session)
+        session_id = None if ephemeral else self._session_id_for_engine(engine, session)
 
         response_parts: list[str] = []
         tool_summaries: list[str] = []
@@ -937,7 +1017,8 @@ class SessionRuntime:
                 return
 
             if event_type == "session_id" and isinstance(content, str) and content:
-                await self._save_session_id(engine, content)
+                if not ephemeral:
+                    await self._save_session_id(engine, content)
             elif event_type == "text" and isinstance(content, str):
                 if accumulate_text:
                     accumulated += content
@@ -963,6 +1044,35 @@ class SessionRuntime:
                 await self._emit(OutboundMessage("Cancelled."))
 
     async def _run_debate(self, session: SessionState, prompt: str) -> None:
+        # Phase 3: plan approval — user replied to "Plan ready, reply 'go'"
+        if self._debate_state is not None and self._debate_state.get("phase") == "awaiting_approval":
+            handoff_plan = self._debate_state["handoff_plan"]
+            self._debate_state = None
+
+            user_input = prompt.strip().lower()
+            if user_input in ("go", "yes", "execute", "run", "do it", "proceed"):
+                execute_plan = handoff_plan
+            else:
+                execute_plan = (
+                    f"Additional instructions from user:\n{prompt}\n\n"
+                    f"Original plan:\n{handoff_plan}"
+                )
+
+            debate_cfg = DebateConfig()
+            qwen_model = debate_cfg.resolve_model_a_name()
+            await self._emit(
+                OutboundMessage(f"---\n\nHanding off to {qwen_model} for implementation...")
+            )
+            self._create_runner_for_engine(
+                "pi", session,
+                pi_config=PiConfig(model=qwen_model, system_prompt=""),
+            )
+            await self._run_engine_generic(
+                "pi", session, execute_plan,
+                skip_runner_create=True, result_engine="debate",
+            )
+            return
+
         # Phase 1: generate clarifying question (no debate state yet)
         if self._debate_state is None:
             self._create_runner_for_engine("debate", session)
@@ -1055,21 +1165,17 @@ class SessionRuntime:
 
             await _flush_buf()
 
-            # Auto-handoff: execute the final plan via the debate model.
+            # Approval gate: pause before handoff so user can review the plan.
             if handoff_plan and not self.shutting_down:
-                debate_cfg = DebateConfig()
-                qwen_model = debate_cfg.resolve_model_a_name()
-                await self._emit(
-                    OutboundMessage(f"---\n\nHanding off to {qwen_model} for implementation...")
-                )
-                self._create_runner_for_engine(
-                    "pi", session,
-                    pi_config=PiConfig(model=qwen_model, system_prompt=""),
-                )
-                await self._run_engine_generic(
-                    "pi", session, handoff_plan,
-                    skip_runner_create=True, result_engine="debate",
-                )
+                self._debate_state = {
+                    "phase": "awaiting_approval",
+                    "handoff_plan": handoff_plan,
+                }
+                await self._emit(OutboundMessage(
+                    "---\n\nPlan ready for execution. "
+                    "Reply 'go' to execute, or send modifications."
+                ))
+                return  # Session goes idle, user sees the plan
 
     # ------------------------------------------------------------------
     # Tool progress helpers

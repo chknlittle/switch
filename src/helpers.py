@@ -30,11 +30,21 @@ def _is_conflict_output(output: str) -> bool:
     )
 
 
+_STOPWORDS = frozenset({
+    "please", "can", "you", "could", "would", "help", "me", "i", "want",
+    "need", "to", "a", "an", "the", "my", "this", "that", "make", "write",
+    "create", "build", "do", "just", "some", "with", "for", "and", "is",
+    "it", "be", "have", "has", "how", "what", "lets", "let",
+})
+
+
 def slugify(text: str, max_len: int = 20) -> str:
     """Convert text to a safe session/username."""
-    words = text.lower().split()[:4]
-    slug = "-".join(words)
-    slug = re.sub(r"[^a-z0-9\\-]", "", slug)
+    words = text.lower().split()
+    meaningful = [w for w in words if w not in _STOPWORDS]
+    chosen = (meaningful or words)[:4]  # fall back to original if all filtered
+    slug = "-".join(chosen)
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
     slug = slug[:max_len].rstrip("-")
     return slug or f"session-{secrets.token_hex(4)}"
 
