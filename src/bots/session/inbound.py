@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
+
+log = logging.getLogger(__name__)
 
 
 _URL_RE = re.compile(r"https?://[^\s<>\]\)\}]+", re.IGNORECASE)
@@ -51,7 +54,7 @@ def extract_attachment_urls(msg, body: str) -> list[str]:
                     if text.startswith("http"):
                         urls.append(text)
     except Exception:
-        pass
+        log.debug("Failed to extract attachment URLs from stanza", exc_info=True)
 
     for m in _URL_RE.finditer(body or ""):
         raw = m.group(0)
@@ -108,7 +111,7 @@ def extract_bob_images(msg) -> list[tuple[str, bytes, str | None]]:
                 original = f"cid:{cid}" if cid else None
                 out.append((mime, data, original))
     except Exception:
-        pass
+        log.debug("Failed to extract BOB images from stanza", exc_info=True)
 
     return out
 

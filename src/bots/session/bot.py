@@ -1,4 +1,4 @@
-"""Session bot - one XMPP bot per OpenCode/Claude session."""
+"""Session bot - one XMPP bot per session."""
 
 from __future__ import annotations
 
@@ -44,7 +44,8 @@ from src.helpers import (
     log_activity,
 )
 from src.runners import Runner, create_runner
-from src.runners.opencode.config import OpenCodeConfig
+from src.runners.debate.config import DebateConfig
+from src.runners.pi.config import PiConfig
 from src.attachments import Attachment, AttachmentStore
 from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
 
@@ -103,6 +104,9 @@ class SessionBot(BaseXMPPBot):
         self._last_vllm_abort_ts = 0.0
         self._vllm_abort_task: asyncio.Task | None = None
 
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_attempt: int = 0
+
         self._runtime = self._build_runtime()
         # Public session interface for commands/other adapters.
         self.session: SessionPort = self._runtime
@@ -157,27 +161,26 @@ class SessionBot(BaseXMPPBot):
                 name=s.name,
                 active_engine=s.active_engine,
                 claude_session_id=s.claude_session_id,
-                opencode_session_id=s.opencode_session_id,
-                opencode_agent=s.opencode_agent,
+                pi_session_id=s.pi_session_id,
                 model_id=s.model_id,
                 reasoning_mode=s.reasoning_mode,
             )
 
-        def update_last_active(self, name: str) -> None:
-            self._repo.update_last_active(name)
+        async def update_last_active(self, name: str) -> None:
+            await self._repo.update_last_active(name)
 
-        def update_claude_session_id(self, name: str, session_id: str) -> None:
-            self._repo.update_claude_session_id(name, session_id)
+        async def update_claude_session_id(self, name: str, session_id: str) -> None:
+            await self._repo.update_claude_session_id(name, session_id)
 
-        def update_opencode_session_id(self, name: str, session_id: str) -> None:
-            self._repo.update_opencode_session_id(name, session_id)
+        async def update_pi_session_id(self, name: str, session_id: str) -> None:
+            await self._repo.update_pi_session_id(name, session_id)
 
     class _MessagesAdapter(MessageStorePort):
         def __init__(self, repo: MessageRepository):
             self._repo = repo
 
-        def add(self, session_name: str, role: str, content: str, engine: str) -> None:
-            self._repo.add(session_name, role, content, engine)
+        async def add(self, session_name: str, role: str, content: str, engine: str) -> None:
+            await self._repo.add(session_name, role, content, engine)
 
     class _RunnerFactoryAdapter(RunnerFactoryPort):
         def create(
@@ -187,14 +190,16 @@ class SessionBot(BaseXMPPBot):
             working_dir: str,
             output_dir: Path,
             session_name: str,
-            opencode_config: OpenCodeConfig | None = None,
+            pi_config: PiConfig | None = None,
+            debate_config: DebateConfig | None = None,
         ) -> Runner:
             return create_runner(
                 engine,
                 working_dir=working_dir,
                 output_dir=output_dir,
                 session_name=session_name,
-                opencode_config=opencode_config,
+                pi_config=pi_config,
+                debate_config=debate_config,
             )
 
     class _HistoryAdapter(HistoryPort):
@@ -221,7 +226,7 @@ class SessionBot(BaseXMPPBot):
         def __init__(self, repo: RalphLoopRepository):
             self._repo = repo
 
-        def create(
+        async def create(
             self,
             session_name: str,
             prompt: str,
@@ -229,7 +234,7 @@ class SessionBot(BaseXMPPBot):
             completion_promise: str | None,
             wait_seconds: float,
         ) -> int:
-            return self._repo.create(
+            return await self._repo.create(
                 session_name,
                 prompt,
                 max_iterations=max_iterations,
@@ -237,14 +242,14 @@ class SessionBot(BaseXMPPBot):
                 wait_seconds=float(wait_seconds or 0.0),
             )
 
-        def update_progress(
+        async def update_progress(
             self,
             loop_id: int,
             current_iteration: int,
             total_cost: float,
             status: str = "running",
         ) -> None:
-            self._repo.update_progress(loop_id, current_iteration, total_cost, status)
+            await self._repo.update_progress(loop_id, current_iteration, total_cost, status)
 
     def _build_runtime(self) -> SessionRuntime:
         return SessionRuntime(
@@ -270,8 +275,16 @@ class SessionBot(BaseXMPPBot):
 
     async def _on_start(self, event):
         self.send_presence()
-        await self.get_roster()
-        await self["xep_0280"].enable()  # type: ignore[attr-defined,union-attr]
+        try:
+            await asyncio.wait_for(self.get_roster(), timeout=15)
+            await asyncio.wait_for(
+                self["xep_0280"].enable(), timeout=15  # type: ignore[attr-defined,union-attr]
+            )
+        except asyncio.TimeoutError:
+            self.startup_error = "XMPP startup timed out (roster/carbons)"
+            self.log.error("Startup timed out during roster/carbons")
+            self.disconnect()
+            return
         self._load_room_settings()
         if self.room_jid:
             joined = await self._join_collaboration_room()
@@ -284,18 +297,44 @@ class SessionBot(BaseXMPPBot):
                 return
         self.log.info("Connected")
         self.set_connected(True)
+        self._reconnect_attempt = 0
 
     def on_disconnected(self, event):
         self.set_connected(False)
         if self.shutting_down:
             self.log.info("Disconnected during shutdown; not reconnecting")
             return
-        self.log.warning("Disconnected, reconnecting...")
-        asyncio.ensure_future(self._reconnect())
+        if self._reconnect_task and not self._reconnect_task.done():
+            self.log.debug("Reconnect already in progress; skipping duplicate")
+            return
+        self._reconnect_task = asyncio.ensure_future(self._reconnect())
 
     async def _reconnect(self):
-        await asyncio.sleep(5)
-        self.connect()
+        _MAX_ATTEMPTS = 10
+        _BASE_DELAY = 5
+        _MAX_DELAY = 60
+        while self._reconnect_attempt < _MAX_ATTEMPTS:
+            if self.shutting_down:
+                return
+            self._reconnect_attempt += 1
+            delay = min(_BASE_DELAY * (2 ** (self._reconnect_attempt - 1)), _MAX_DELAY)
+            self.log.warning(
+                "Reconnecting (attempt %d/%d) in %ds...",
+                self._reconnect_attempt, _MAX_ATTEMPTS, delay,
+            )
+            await asyncio.sleep(delay)
+            if self.shutting_down:
+                return
+            try:
+                self.connect()
+            except Exception:
+                self.log.warning("Reconnect connect() failed", exc_info=True)
+                continue
+            # connect() succeeded at the transport level — wait for
+            # _on_start to confirm (which resets _reconnect_attempt)
+            # or for on_disconnected to re-enter this path.
+            return
+        self.log.error("Giving up reconnect after %d attempts", _MAX_ATTEMPTS)
 
     def send_reply(
         self,
@@ -322,6 +361,15 @@ class SessionBot(BaseXMPPBot):
         except ValueError:
             max_len = 3500
         max_len = max(500, min(max_len, 100000))
+
+        def _safe_send(m) -> bool:
+            try:
+                m.send()
+                return True
+            except Exception:
+                self.log.warning("XMPP send failed", exc_info=True)
+                return False
+
         target = recipient or self._default_reply_recipient()
         is_room_target = bool(self.room_jid and target == self.room_jid)
         if len(text) <= max_len:
@@ -346,7 +394,7 @@ class SessionBot(BaseXMPPBot):
                 )
                 msg.xml.append(meta)
 
-            msg.send()
+            _safe_send(msg)
             return
 
         parts = self._split_message(text, max_len)
@@ -374,7 +422,8 @@ class SessionBot(BaseXMPPBot):
                 )
                 msg.xml.append(meta)
 
-            msg.send()
+            if not _safe_send(msg):
+                break
 
     def _default_reply_recipient(self) -> str:
         return self.room_jid or self.xmpp_recipient
@@ -390,7 +439,7 @@ class SessionBot(BaseXMPPBot):
         self.room_jid = (session.room_jid or "").split("/", 1)[0] if session else None
         self.room_nick = self.session_name
 
-    async def _join_collaboration_room(self) -> None:
+    async def _join_collaboration_room(self) -> bool:
         room = (self.room_jid or "").strip()
         if not room:
             return True
@@ -414,7 +463,7 @@ class SessionBot(BaseXMPPBot):
     @staticmethod
     def _infer_meta_tool_from_summary(summary: str) -> str | None:
         """Best-effort mapping from tool summary text to meta.tool."""
-        # OpenCode tool summaries look like: "[tool:bash ...]".
+        # Pi tool summaries look like: "[tool:bash ...]".
         if summary.startswith("[tool:"):
             end = summary.find("]")
             head = summary[:end] if end != -1 else summary
@@ -422,7 +471,7 @@ class SessionBot(BaseXMPPBot):
             tool = inner.split(maxsplit=1)[0].strip()
             return tool or None
 
-        # OpenCode tool-result summaries look like: "[tool-result:bash ...]".
+        # Pi tool-result summaries look like: "[tool-result:bash ...]".
         if summary.startswith("[tool-result:"):
             end = summary.find("]")
             head = summary[:end] if end != -1 else summary
@@ -456,8 +505,8 @@ class SessionBot(BaseXMPPBot):
             cancelled_any = True
             self.runner.cancel()
 
-        # If we're using Helga vLLM via the OpenCode server, cancellation at the
-        # OpenCode layer doesn't always stop the underlying vLLM generation.
+        # If we're using Helga vLLM, cancellation at the runner layer doesn't
+        # always stop the underlying vLLM generation.
         # For those cases, do a best-effort hard abort.
         if cancelled_any:
             self._maybe_hard_abort_vllm()
@@ -468,7 +517,7 @@ class SessionBot(BaseXMPPBot):
         """Best-effort: restart Helga vLLM to abort the active generation.
 
         This is intentionally conservative:
-        - Only triggers for OpenCode sessions
+        - Only triggers for Pi sessions using vLLM-backed models
         - Only triggers when the selected model is our vLLM-backed GLM provider
         - Cooldown + single in-flight task to avoid restart storms
         """
@@ -481,7 +530,7 @@ class SessionBot(BaseXMPPBot):
         if not session:
             return
         engine = (session.active_engine or "").strip().lower()
-        if engine != "opencode":
+        if engine not in {"pi", "debate"}:
             return
         model_id = (session.model_id or "").strip()
         if not model_id.startswith("glm_vllm/"):
@@ -728,8 +777,11 @@ class SessionBot(BaseXMPPBot):
         if not is_scheduled and await self.commands.handle(body):
             return
 
-        # Shell commands
+        # Shell commands — only session owner or collaborators may execute.
         if body.startswith("!"):
+            if not self._is_shell_authorized(msg):
+                self.send_reply("Shell commands are restricted to the session owner and collaborators.")
+                return
             await self.run_shell_command(body[1:].strip())
             return
 
@@ -831,6 +883,27 @@ class SessionBot(BaseXMPPBot):
     # Shell commands
     # -------------------------------------------------------------------------
 
+    def _is_shell_authorized(self, msg) -> bool:
+        """Check if the message sender is the session owner or a collaborator."""
+        session = self.sessions.get(self.session_name)
+        if not session:
+            return False
+
+        owner_bare = (session.owner_jid or "").split("/", 1)[0]
+        msg_type = msg["type"]
+
+        if msg_type == "groupchat":
+            # In MUC, we can't reliably get the real JID from the nick.
+            # Shell commands are too dangerous to allow without identity verification.
+            return False
+
+        sender_bare = str(msg["from"].bare)
+        if owner_bare and sender_bare == owner_bare:
+            return True
+
+        collaborators = self.sessions.list_collaborators(self.session_name)
+        return sender_bare in collaborators
+
     async def run_shell_command(self, cmd: str):
         """Run shell command, send output, inform agent."""
         if not cmd:
@@ -846,7 +919,21 @@ class SessionBot(BaseXMPPBot):
             stderr=asyncio.subprocess.STDOUT,
             cwd=self.working_dir,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            self.log.warning("Shell command timed out after 30s, killing: %s", cmd)
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                proc.kill()
+            self.send_reply(f"$ {cmd}\n(timed out after 30s — process killed)")
+            context_msg = (
+                f"[Shell command `{cmd}` timed out after 30s and was killed]"
+            )
+            await self.process_message(context_msg, trigger_response=False)
+            return
         output = stdout.decode("utf-8", errors="replace").strip() or "(no output)"
 
         display = output[:4000] + "\n... (truncated)" if len(output) > 4000 else output
@@ -924,7 +1011,7 @@ class SessionBot(BaseXMPPBot):
     def answer_pending_question(
         self, answer: object, *, request_id: str | None = None
     ) -> bool:
-        """Answer a pending OpenCode question via XMPP meta reply."""
+        """Answer a pending question via XMPP meta reply."""
         return self._runtime.answer_question(answer, request_id=request_id)
 
     # -------------------------------------------------------------------------
@@ -942,8 +1029,7 @@ class SessionBot(BaseXMPPBot):
         self.send_reply("Spawning sibling session...")
 
         parent = self.sessions.get(self.session_name)
-        engine = parent.active_engine if parent else "opencode"
-        agent = parent.opencode_agent if parent else "bridge"
+        engine = parent.active_engine if parent else "pi"
         model_id = parent.model_id if parent else None
         owner_jid = parent.owner_jid if parent else None
         collaborators: list[str] | None = None
@@ -955,7 +1041,6 @@ class SessionBot(BaseXMPPBot):
             self.manager,
             first_message,
             engine=engine,
-            opencode_agent=agent,
             model_id=model_id,
             label=None,
             name_hint=f"{self.session_name}-sib",

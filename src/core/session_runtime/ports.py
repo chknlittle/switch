@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Protocol
 
 from src.runners import Runner, RunnerEvent
-from src.runners.opencode.config import OpenCodeConfig
+from src.runners.debate.config import DebateConfig
+from src.runners.pi.config import PiConfig
 from src.attachments import Attachment
 
 
@@ -20,8 +21,7 @@ class SessionState:
     name: str
     active_engine: str
     claude_session_id: str | None
-    opencode_session_id: str | None
-    opencode_agent: str
+    pi_session_id: str | None
     model_id: str
     reasoning_mode: str
 
@@ -29,15 +29,15 @@ class SessionState:
 class SessionStorePort(Protocol):
     def get(self, name: str) -> SessionState | None: ...
 
-    def update_last_active(self, name: str) -> None: ...
+    async def update_last_active(self, name: str) -> None: ...
 
-    def update_claude_session_id(self, name: str, session_id: str) -> None: ...
+    async def update_claude_session_id(self, name: str, session_id: str) -> None: ...
 
-    def update_opencode_session_id(self, name: str, session_id: str) -> None: ...
+    async def update_pi_session_id(self, name: str, session_id: str) -> None: ...
 
 
 class MessageStorePort(Protocol):
-    def add(self, session_name: str, role: str, content: str, engine: str) -> None: ...
+    async def add(self, session_name: str, role: str, content: str, engine: str) -> None: ...
 
 
 class RunnerFactoryPort(Protocol):
@@ -48,7 +48,8 @@ class RunnerFactoryPort(Protocol):
         working_dir: str,
         output_dir: Path,
         session_name: str,
-        opencode_config: OpenCodeConfig | None = None,
+        pi_config: PiConfig | None = None,
+        debate_config: DebateConfig | None = None,
     ) -> Runner: ...
 
 
@@ -67,7 +68,7 @@ class AttachmentPromptPort(Protocol):
 
 
 class RalphLoopStorePort(Protocol):
-    def create(
+    async def create(
         self,
         session_name: str,
         prompt: str,
@@ -76,7 +77,7 @@ class RalphLoopStorePort(Protocol):
         wait_seconds: float,
     ) -> int: ...
 
-    def update_progress(
+    async def update_progress(
         self,
         loop_id: int,
         current_iteration: int,

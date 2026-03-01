@@ -20,7 +20,8 @@ from typing import Awaitable, Callable
 
 from src.attachments import Attachment
 from src.runners import Question, Runner
-from src.runners.opencode.config import OpenCodeConfig
+from src.runners.debate.config import DebateConfig
+from src.runners.pi.config import PiConfig
 
 from src.core.session_runtime.api import (
     EventSinkPort,
@@ -101,13 +102,24 @@ class SessionRuntime:
         self._ralph_wake = asyncio.Event()
         self._ralph_injected_prompt: str | None = None
 
+        # Pending handoff: (engine, prompt) set by run_handoff, consumed by _process_one.
+        self._pending_handoff: tuple[str, str] | None = None
+
+        # Context prefix: prepended to the next real user prompt, then cleared.
+        self._context_prefix: str | None = None
+
+        # Debate question-phase state machine.
+        # When set, the debate is waiting for the user's answer before running.
+        self._debate_state: dict | None = None
+
         # Per-engine cumulative usage for the lifetime of this Switch session.
         # This reflects total tokens/cost used, regardless of remote session resets.
-        self._usage_tokens_total: dict[str, int] = {"opencode": 0, "claude": 0}
-        self._usage_cost_total: dict[str, float] = {"opencode": 0.0, "claude": 0.0}
+        self._usage_tokens_total: dict[str, int] = {"claude": 0, "pi": 0, "debate": 0}
+        self._usage_cost_total: dict[str, float] = {"claude": 0.0, "pi": 0.0, "debate": 0.0}
         self._last_remote_session_id: dict[str, str | None] = {
-            "opencode": None,
             "claude": None,
+            "pi": None,
+            "debate": None,
         }
 
         # Throttle last_active writes. SQLite commits can become a bottleneck under
@@ -227,7 +239,7 @@ class SessionRuntime:
             t = stats.get("tokens_total")
             return int(t) if isinstance(t, (int, float)) else 0
 
-        # OpenCode emits several categories; treat them as additive.
+        # Pi emits several categories; treat them as additive.
         total = 0
         for k in (
             "tokens_in",
@@ -301,6 +313,33 @@ class SessionRuntime:
         if done is not None:
             await done
 
+    def set_context_prefix(self, text: str) -> None:
+        """Store context to prepend to the next real user prompt."""
+        self._context_prefix = text
+
+    def debate_awaiting(self) -> bool:
+        """True if the debate state machine is waiting for user input."""
+        return self._debate_state is not None
+
+    async def run_handoff(self, target_engine: str, prompt: str) -> None:
+        """Run a prompt through a specific engine without changing the session's active engine.
+
+        Routes through the queue via a sentinel work item so it serializes
+        properly with other messages (no concurrent runner access).
+        """
+        if self.shutting_down:
+            return
+
+        # Stash handoff params; the loop will pick them up from the sentinel.
+        self._pending_handoff = (target_engine, prompt)
+        try:
+            await self.enqueue(
+                "", None,
+                trigger_response=True, scheduled=False, wait=True,
+            )
+        finally:
+            self._pending_handoff = None
+
     def cancel_queued(self) -> bool:
         """Drop queued items; ignore anything already dequeued."""
         self._generation += 1
@@ -338,6 +377,19 @@ class SessionRuntime:
         if self._run_task and not self._run_task.done():
             cancelled_any = True
             self._run_task.cancel()
+
+        # Clear pending handoff on cancel.
+        if self._pending_handoff is not None:
+            self._pending_handoff = None
+            cancelled_any = True
+
+        # Clear context prefix on cancel.
+        self._context_prefix = None
+
+        # Clear debate question-phase state on cancel.
+        if self._debate_state is not None:
+            self._debate_state = None
+            cancelled_any = True
 
         # Best-effort: unblock any waiting question futures.
         for fut in list(self._pending_question_answers.values()):
@@ -449,7 +501,17 @@ class SessionRuntime:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._events.emit(event))
+        task = loop.create_task(self._events.emit(event))
+        # prevent GC of the task and log errors instead of dropping them
+        task.add_done_callback(self._emit_task_done)
+
+    @staticmethod
+    def _emit_task_done(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            log.warning("emit_nowait failed: %s", exc)
 
     async def _emit(self, event: SessionEvent) -> None:
         await self._events.emit(event)
@@ -494,6 +556,30 @@ class SessionRuntime:
             await self._run_ralph(cfg)
             return
 
+        # Handoff sentinel: run_handoff enqueues an empty body with _pending_handoff set.
+        # Check empty body to avoid consuming the handoff if a real message was queued first.
+        if self._pending_handoff is not None and not item.body:
+            target_engine, handoff_prompt = self._pending_handoff
+            self._pending_handoff = None  # Consume immediately
+            self._context_prefix = None  # Don't leak context into handoff
+            session = self._sessions.get(self.session_name)
+            if not session:
+                await self._emit(OutboundMessage("Session not found."))
+                return
+            # Store the handoff prompt so conversation history isn't orphaned.
+            await self._messages.add(
+                self.session_name, "user", handoff_prompt[:500], target_engine,
+            )
+            try:
+                self._create_runner_for_engine(target_engine, session)
+                await self._run_engine_generic(
+                    target_engine, session, handoff_prompt,
+                    skip_runner_create=True, ephemeral=True,
+                )
+            except Exception as e:
+                await self._emit(OutboundMessage(f"Handoff error: {type(e).__name__}: {e}"))
+            return
+
         session = self._sessions.get(self.session_name)
         if not session:
             await self._emit(OutboundMessage("Session not found in database."))
@@ -501,7 +587,7 @@ class SessionRuntime:
 
         now = time.monotonic()
         if (now - self._last_active_written_at) >= self._last_active_min_interval_s:
-            self._sessions.update_last_active(self.session_name)
+            await self._sessions.update_last_active(self.session_name)
             self._last_active_written_at = now
 
         body_for_history = self._prompt.augment_prompt(item.body, item.attachments)
@@ -509,30 +595,40 @@ class SessionRuntime:
             body_for_history, self.working_dir, session.claude_session_id
         )
         self._history.log_activity(item.body, session=self.session_name, source="xmpp")
-        self._messages.add(
+        await self._messages.add(
             self.session_name, "user", body_for_history, session.active_engine
         )
 
         if not item.trigger_response:
             return
 
-        engine = (session.active_engine or "opencode").strip().lower()
+        engine = (session.active_engine or "pi").strip().lower()
+
+        # Prepend any stored context (from /context command) to the prompt.
+        # Don't apply to debate awaiting states — those operate on raw user input.
+        prompt_for_engine = body_for_history
+        if self._context_prefix and not (
+            engine == "debate" and self._debate_state is not None
+        ):
+            prompt_for_engine = self._context_prefix + "\n\n" + body_for_history
+            self._context_prefix = None
+
         self._run_task = asyncio.create_task(
-            self._run_engine(engine=engine, session=session, prompt=body_for_history)
+            self._run_engine(engine=engine, session=session, prompt=prompt_for_engine)
         )
         try:
             await self._run_task
         finally:
             self._run_task = None
 
-    def _ralph_save(self, status: str) -> None:
+    async def _ralph_save(self, status: str) -> None:
         if (
             not self._ralph_loops
             or not self._ralph_status
             or not self._ralph_status.loop_id
         ):
             return
-        self._ralph_loops.update_progress(
+        await self._ralph_loops.update_progress(
             self._ralph_status.loop_id,
             self._ralph_status.current_iteration,
             self._ralph_status.total_cost,
@@ -554,7 +650,7 @@ class SessionRuntime:
         # Persist loop record.
         if self._ralph_loops:
             try:
-                loop_id = self._ralph_loops.create(
+                loop_id = await self._ralph_loops.create(
                     self.session_name,
                     cfg.prompt,
                     int(cfg.max_iterations or 0),
@@ -563,7 +659,7 @@ class SessionRuntime:
                 )
                 self._ralph_status.loop_id = loop_id
             except Exception:
-                pass
+                log.warning("Failed to persist Ralph loop for %s", self.session_name, exc_info=True)
 
         promise_str = (
             f'"{cfg.completion_promise}"' if cfg.completion_promise else "none"
@@ -584,7 +680,7 @@ class SessionRuntime:
             while True:
                 if self.shutting_down:
                     self._ralph_status.status = "cancelled"
-                    self._ralph_save("cancelled")
+                    await self._ralph_save("cancelled")
                     return
 
                 if self._ralph_stop_requested:
@@ -595,7 +691,7 @@ class SessionRuntime:
                             f"Total cost: ${self._ralph_status.total_cost:.3f}"
                         )
                     )
-                    self._ralph_save("cancelled")
+                    await self._ralph_save("cancelled")
                     return
 
                 if cfg.max_iterations and cfg.max_iterations > 0:
@@ -607,11 +703,11 @@ class SessionRuntime:
                                 f"Total cost: ${self._ralph_status.total_cost:.3f}"
                             )
                         )
-                        self._ralph_save("max_iterations")
+                        await self._ralph_save("max_iterations")
                         return
 
                 self._ralph_status.current_iteration += 1
-                self._ralph_save("running")
+                await self._ralph_save("running")
 
                 # Re-read session state each iteration so model/engine changes apply.
                 session = self._sessions.get(self.session_name)
@@ -619,7 +715,7 @@ class SessionRuntime:
                     self._ralph_status.status = "error"
                     self._ralph_status.error = "Session not found"
                     await self._emit(OutboundMessage("Session not found in database."))
-                    self._ralph_save("error")
+                    await self._ralph_save("error")
                     return
 
                 result = await self._run_ralph_iteration(cfg, session)
@@ -632,7 +728,7 @@ class SessionRuntime:
                             f"Stopping. Total cost: ${self._ralph_status.total_cost:.3f}"
                         )
                     )
-                    self._ralph_save("error")
+                    await self._ralph_save("error")
                     return
 
                 self._ralph_status.total_cost += float(result.cost)
@@ -659,10 +755,10 @@ class SessionRuntime:
                             f"Total cost: ${self._ralph_status.total_cost:.3f}"
                         )
                     )
-                    self._ralph_save("completed")
+                    await self._ralph_save("completed")
                     return
 
-                self._ralph_save("running")
+                await self._ralph_save("running")
                 if cfg.wait_seconds and cfg.wait_seconds > 0:
                     try:
                         await asyncio.wait_for(
@@ -687,7 +783,7 @@ class SessionRuntime:
                         await self._emit(
                             OutboundMessage("Session not found in database.")
                         )
-                        self._ralph_save("error")
+                        await self._ralph_save("error")
                         return
 
                     await self._emit(
@@ -706,7 +802,7 @@ class SessionRuntime:
                                 f"Stopping. Total cost: ${self._ralph_status.total_cost:.3f}"
                             )
                         )
-                        self._ralph_save("error")
+                        await self._ralph_save("error")
                         return
 
                     self._ralph_status.total_cost += float(result.cost)
@@ -735,11 +831,11 @@ class SessionRuntime:
                                 f"Total cost: ${self._ralph_status.total_cost:.3f}"
                             )
                         )
-                        self._ralph_save("completed")
+                        await self._ralph_save("completed")
                         return
 
                     # Apply wait after injection too.
-                    self._ralph_save("running")
+                    await self._ralph_save("running")
                     if cfg.wait_seconds and cfg.wait_seconds > 0:
                         try:
                             await asyncio.wait_for(
@@ -752,7 +848,7 @@ class SessionRuntime:
         finally:
             if self._ralph_status and self._ralph_status.status == "running":
                 self._ralph_status.status = "finished"
-                self._ralph_save("finished")
+                await self._ralph_save("finished")
 
     @dataclass
     class _RalphIterationResult:
@@ -775,64 +871,31 @@ class SessionRuntime:
     ) -> "SessionRuntime._RalphIterationResult":
         result = SessionRuntime._RalphIterationResult()
         engine = (
-            (cfg.force_engine or session.active_engine or "opencode").strip().lower()
+            (cfg.force_engine or session.active_engine or "pi").strip().lower()
         )
-        if engine not in {"claude", "opencode"}:
-            engine = "opencode"
+        if engine not in {"claude", "pi"}:
+            log.warning("Ralph: engine %r not supported, falling back to pi", engine)
+            engine = "pi"
 
-        tool_summaries: list[str] = []
-        last_progress_at = 0
-
-        if engine == "opencode":
-            question_callback = self._create_question_callback()
-            self.runner = self._runner_factory.create(
-                "opencode",
-                working_dir=self.working_dir,
-                output_dir=self.output_dir,
-                session_name=self.session_name,
-                opencode_config=OpenCodeConfig(
-                    model=session.model_id,
-                    reasoning_mode=session.reasoning_mode,
-                    agent=session.opencode_agent,
-                    question_callback=question_callback,
-                ),
-            )
-        else:
-            self.runner = self._runner_factory.create(
-                "claude",
-                working_dir=self.working_dir,
-                output_dir=self.output_dir,
-                session_name=self.session_name,
-            )
+        self._create_runner_for_engine(engine, session)
 
         prompt = prompt_override or self._build_ralph_prompt(
             cfg, self._ralph_status.current_iteration if self._ralph_status else 1
         )
+        accumulate_text = engine != "claude"
         try:
-            # In prompt-only mode, each iteration should be isolated: do not
-            # resume any remote session, and do not overwrite the session's
-            # stored resume IDs.
             session_id = None
             if not cfg.prompt_only:
-                session_id = (
-                    session.opencode_session_id
-                    if engine == "opencode"
-                    else session.claude_session_id
-                )
+                session_id = self._session_id_for_engine(engine, session)
             accumulated = ""
+            tool_summaries: list[str] = []
+            last_progress_at = 0
             async for event_type, content in self.runner.run(prompt, session_id):
                 if event_type == "session_id" and isinstance(content, str) and content:
                     if not cfg.prompt_only:
-                        if engine == "opencode":
-                            self._sessions.update_opencode_session_id(
-                                self.session_name, content
-                            )
-                        else:
-                            self._sessions.update_claude_session_id(
-                                self.session_name, content
-                            )
+                        await self._save_session_id(engine, content)
                 elif event_type == "text" and isinstance(content, str):
-                    if engine == "opencode":
+                    if accumulate_text:
                         accumulated += content
                         result.text = accumulated
                     else:
@@ -840,36 +903,13 @@ class SessionRuntime:
                 elif event_type == "tool" and isinstance(content, str):
                     result.tool_count += 1
                     tool_summaries.append(content)
-
-                    is_bash = content.startswith("[tool:bash")
-                    if is_bash or len(tool_summaries) == 1:
-                        last_progress_at = len(tool_summaries)
-                        await self._emit(
-                            OutboundMessage(
-                                f"... {content}",
-                                meta_type="tool",
-                                meta_tool=self._infer_meta_tool_from_summary(content),
-                            )
-                        )
-                    elif len(tool_summaries) - last_progress_at >= 8:
-                        last_progress_at = len(tool_summaries)
-                        await self._emit(
-                            OutboundMessage(
-                                f"... {' '.join(tool_summaries[-3:])}",
-                                meta_type="tool",
-                                meta_tool=self._infer_meta_tool_from_summary(
-                                    tool_summaries[-1]
-                                ),
-                            )
-                        )
+                    await self._emit_tool_progress(content, tool_summaries, last_progress_at)
+                    last_progress_at = self._updated_progress_at(tool_summaries, last_progress_at, content)
                 elif event_type == "tool_result" and isinstance(content, str):
-                    await self._emit(
-                        OutboundMessage(
-                            f"... {content}",
-                            meta_type="tool-result",
-                            meta_tool=self._infer_meta_tool_from_summary(content),
-                        )
-                    )
+                    await self._emit(OutboundMessage(
+                        f"... {content}", meta_type="tool-result",
+                        meta_tool=self._infer_meta_tool_from_summary(content),
+                    ))
                 elif event_type == "result" and isinstance(content, dict):
                     cost = content.get("cost_usd")
                     if isinstance(cost, (int, float)):
@@ -883,135 +923,299 @@ class SessionRuntime:
         except Exception as e:
             result.error = f"{type(e).__name__}: {e}"
         finally:
+            runner_ref = self.runner
             self.runner = None
+            if runner_ref and hasattr(runner_ref, "cleanup"):
+                try:
+                    await runner_ref.cleanup()
+                except Exception:
+                    log.warning("Runner cleanup failed", exc_info=True)
         return result
+
+    # ------------------------------------------------------------------
+    # Engine dispatch
+    # ------------------------------------------------------------------
+
+    def _create_runner_for_engine(
+        self,
+        engine: str,
+        session: SessionState,
+        *,
+        pi_config: PiConfig | None = None,
+        debate_config: DebateConfig | None = None,
+    ) -> None:
+        """Set self.runner for the given engine."""
+        if engine == "claude":
+            self.runner = self._runner_factory.create(
+                "claude",
+                working_dir=self.working_dir,
+                output_dir=self.output_dir,
+                session_name=self.session_name,
+            )
+        elif engine == "pi":
+            self.runner = self._runner_factory.create(
+                "pi",
+                working_dir=self.working_dir,
+                output_dir=self.output_dir,
+                session_name=self.session_name,
+                pi_config=pi_config or PiConfig(model=session.model_id or None),
+            )
+        elif engine == "debate":
+            self.runner = self._runner_factory.create(
+                "debate",
+                working_dir=self.working_dir,
+                output_dir=self.output_dir,
+                session_name=self.session_name,
+                debate_config=debate_config or DebateConfig(),
+            )
+        else:
+            raise ValueError(f"Unknown engine: {engine}")
+
+    @staticmethod
+    def _session_id_for_engine(engine: str, session: SessionState) -> str | None:
+        if engine == "claude":
+            return session.claude_session_id
+        if engine == "pi":
+            return session.pi_session_id
+        return None
+
+    async def _save_session_id(self, engine: str, session_id: str) -> None:
+        if engine == "claude":
+            await self._sessions.update_claude_session_id(self.session_name, session_id)
+        elif engine == "pi":
+            await self._sessions.update_pi_session_id(self.session_name, session_id)
 
     async def _run_engine(
         self, *, engine: str, session: SessionState, prompt: str
     ) -> None:
-        if engine == "claude":
-            await self._run_claude(session, prompt)
+        if engine == "debate":
+            await self._run_debate(session, prompt)
             return
-        if engine == "opencode":
-            await self._run_opencode(session, prompt)
+        if engine not in {"claude", "pi"}:
+            await self._emit(OutboundMessage(f"Unknown engine '{engine}'."))
             return
-        await self._emit(OutboundMessage(f"Unknown engine '{engine}'."))
+        await self._run_engine_generic(engine, session, prompt)
 
-    async def _run_claude(self, session: SessionState, prompt: str) -> None:
-        self.runner = self._runner_factory.create(
-            "claude",
-            working_dir=self.working_dir,
-            output_dir=self.output_dir,
-            session_name=self.session_name,
-        )
+    async def _run_engine_generic(
+        self,
+        engine: str,
+        session: SessionState,
+        prompt: str,
+        *,
+        skip_runner_create: bool = False,
+        result_engine: str | None = None,
+        ephemeral: bool = False,
+    ) -> None:
+        """Unified event loop for claude and pi engines.
 
-        response_parts: list[str] = []
-        tool_summaries: list[str] = []
-        last_progress_at = 0
-
-        async for event_type, content in self.runner.run(
-            prompt, session.claude_session_id
-        ):
-            if self.shutting_down:
-                return
-
-            if event_type == "session_id" and isinstance(content, str) and content:
-                self._sessions.update_claude_session_id(self.session_name, content)
-            elif event_type == "text" and isinstance(content, str):
-                response_parts = [content]
-            elif event_type == "tool" and isinstance(content, str):
-                tool_summaries.append(content)
-                if len(tool_summaries) - last_progress_at >= 8:
-                    last_progress_at = len(tool_summaries)
-                    await self._emit(
-                        OutboundMessage(
-                            f"... {' '.join(tool_summaries[-3:])}",
-                            meta_type="tool",
-                            meta_tool=self._infer_meta_tool_from_summary(content),
-                        )
-                    )
-            elif event_type == "result":
-                await self._send_result(
-                    tool_summaries, response_parts, content, engine="claude"
-                )
-            elif event_type == "error":
-                await self._emit(OutboundMessage(f"Error: {content}"))
-            elif event_type == "cancelled":
-                await self._emit(OutboundMessage("Cancelled."))
-
-    async def _run_opencode(self, session: SessionState, prompt: str) -> None:
-        question_callback = self._create_question_callback()
-        self.runner = self._runner_factory.create(
-            "opencode",
-            working_dir=self.working_dir,
-            output_dir=self.output_dir,
-            session_name=self.session_name,
-            opencode_config=OpenCodeConfig(
-                model=session.model_id,
-                reasoning_mode=session.reasoning_mode,
-                agent=session.opencode_agent,
-                question_callback=question_callback,
-            ),
-        )
+        If ephemeral=True, don't save session_id (used by /handoff to avoid
+        overwriting the target engine's session state).
+        """
+        if not skip_runner_create:
+            self._create_runner_for_engine(engine, session)
+        label = result_engine or engine
+        accumulate_text = engine != "claude"
+        session_id = None if ephemeral else self._session_id_for_engine(engine, session)
 
         response_parts: list[str] = []
         tool_summaries: list[str] = []
         accumulated = ""
         last_progress_at = 0
 
-        async for event_type, content in self.runner.run(
-            prompt, session.opencode_session_id
-        ):
+        async for event_type, content in self.runner.run(prompt, session_id):
             if self.shutting_down:
                 return
 
             if event_type == "session_id" and isinstance(content, str) and content:
-                self._sessions.update_opencode_session_id(self.session_name, content)
+                if not ephemeral:
+                    await self._save_session_id(engine, content)
             elif event_type == "text" and isinstance(content, str):
-                accumulated += content
-                response_parts = [accumulated]
+                if accumulate_text:
+                    accumulated += content
+                    response_parts = [accumulated]
+                else:
+                    response_parts = [content]
             elif event_type == "tool" and isinstance(content, str):
                 tool_summaries.append(content)
-                is_bash = content.startswith("[tool:bash")
-                if is_bash or len(tool_summaries) == 1:
-                    last_progress_at = len(tool_summaries)
-                    await self._emit(
-                        OutboundMessage(
-                            f"... {content}",
-                            meta_type="tool",
-                            meta_tool=self._infer_meta_tool_from_summary(content),
-                        )
-                    )
-                elif len(tool_summaries) - last_progress_at >= 8:
-                    last_progress_at = len(tool_summaries)
-                    await self._emit(
-                        OutboundMessage(
-                            f"... {' '.join(tool_summaries[-3:])}",
-                            meta_type="tool",
-                            meta_tool=self._infer_meta_tool_from_summary(
-                                tool_summaries[-1]
-                            ),
-                        )
-                    )
+                await self._emit_tool_progress(content, tool_summaries, last_progress_at)
+                last_progress_at = self._updated_progress_at(tool_summaries, last_progress_at, content)
             elif event_type == "tool_result" and isinstance(content, str):
-                await self._emit(
-                    OutboundMessage(
-                        f"... {content}",
-                        meta_type="tool-result",
-                        meta_tool=self._infer_meta_tool_from_summary(content),
-                    )
-                )
-            elif event_type == "question" and isinstance(content, Question):
-                # The runner handles question flow via the callback.
-                pass
+                await self._emit(OutboundMessage(
+                    f"... {content}", meta_type="tool-result",
+                    meta_tool=self._infer_meta_tool_from_summary(content),
+                ))
             elif event_type == "result":
                 await self._send_result(
-                    tool_summaries, response_parts, content, engine="opencode"
+                    tool_summaries, response_parts, content, engine=label
                 )
             elif event_type == "error":
                 await self._emit(OutboundMessage(f"Error: {content}"))
             elif event_type == "cancelled":
                 await self._emit(OutboundMessage("Cancelled."))
+
+    async def _run_debate(self, session: SessionState, prompt: str) -> None:
+        # Phase 3: plan approval — user replied to "Plan ready, reply 'go'"
+        if self._debate_state is not None and self._debate_state.get("phase") == "awaiting_approval":
+            handoff_plan = self._debate_state["handoff_plan"]
+            self._debate_state = None
+
+            user_input = prompt.strip().lower()
+            if user_input in ("go", "yes", "execute", "run", "do it", "proceed"):
+                execute_plan = handoff_plan
+            else:
+                execute_plan = (
+                    f"Additional instructions from user:\n{prompt}\n\n"
+                    f"Original plan:\n{handoff_plan}"
+                )
+
+            debate_cfg = DebateConfig()
+            qwen_model = debate_cfg.resolve_model_a_name()
+            await self._emit(
+                OutboundMessage(f"---\n\nHanding off to {qwen_model} for implementation...")
+            )
+            self._create_runner_for_engine(
+                "pi", session,
+                pi_config=PiConfig(model=qwen_model, system_prompt=""),
+            )
+            await self._run_engine_generic(
+                "pi", session, execute_plan,
+                skip_runner_create=True, result_engine="debate",
+            )
+            return
+
+        # Phase 1: generate clarifying question (no debate state yet)
+        if self._debate_state is None:
+            self._create_runner_for_engine("debate", session)
+
+            _buf: list[str] = []
+            _buf_len = 0
+            _FLUSH_THRESHOLD = 200
+
+            async def _flush_q() -> None:
+                nonlocal _buf, _buf_len
+                if _buf:
+                    await self._emit(OutboundMessage("".join(_buf)))
+                    _buf = []
+                    _buf_len = 0
+
+            async for event_type, content in self.runner.generate_question(prompt):
+                if self.shutting_down:
+                    return
+                if event_type == "text" and isinstance(content, str):
+                    _buf.append(content)
+                    _buf_len += len(content)
+                    if _buf_len >= _FLUSH_THRESHOLD:
+                        await _flush_q()
+                elif event_type == "error":
+                    await _flush_q()
+                    await self._emit(OutboundMessage(f"Error: {content}"))
+                    return
+                elif event_type == "cancelled":
+                    await _flush_q()
+                    await self._emit(OutboundMessage("Cancelled."))
+                    return
+
+            await _flush_q()
+
+            # Park: save state and return — user sees the question, session goes idle.
+            self._debate_state = {
+                "phase": "awaiting_answers",
+                "original_prompt": prompt,
+            }
+            return
+
+        # Phase 2: user replied — run the full debate with enriched prompt
+        if self._debate_state.get("phase") == "awaiting_answers":
+            original_prompt = self._debate_state["original_prompt"]
+            self._debate_state = None  # Clear state before running
+
+            enriched_prompt = (
+                original_prompt
+                + "\n\n--- User's approach preference ---\n"
+                + prompt
+            )
+
+            self._create_runner_for_engine("debate", session)
+
+            accumulated = ""
+            handoff_plan: str | None = None
+            _buf2: list[str] = []
+            _buf2_len = 0
+            _FLUSH_THRESHOLD2 = 200
+
+            async def _flush_buf() -> None:
+                nonlocal _buf2, _buf2_len
+                if _buf2:
+                    await self._emit(OutboundMessage("".join(_buf2)))
+                    _buf2 = []
+                    _buf2_len = 0
+
+            async for event_type, content in self.runner.run(enriched_prompt):
+                if self.shutting_down:
+                    return
+                if event_type == "text" and isinstance(content, str):
+                    accumulated += content
+                    _buf2.append(content)
+                    _buf2_len += len(content)
+                    if _buf2_len >= _FLUSH_THRESHOLD2:
+                        await _flush_buf()
+                elif event_type == "result":
+                    await _flush_buf()
+                    await self._send_result(
+                        [], [accumulated] if accumulated else [], content, engine="debate"
+                    )
+                elif event_type == "handoff" and isinstance(content, str):
+                    handoff_plan = content
+                elif event_type == "error":
+                    await _flush_buf()
+                    await self._emit(OutboundMessage(f"Error: {content}"))
+                elif event_type == "cancelled":
+                    await _flush_buf()
+                    await self._emit(OutboundMessage("Cancelled."))
+
+            await _flush_buf()
+
+            # Approval gate: pause before handoff so user can review the plan.
+            if handoff_plan and not self.shutting_down:
+                self._debate_state = {
+                    "phase": "awaiting_approval",
+                    "handoff_plan": handoff_plan,
+                }
+                await self._emit(OutboundMessage(
+                    "---\n\nPlan ready for execution. "
+                    "Reply 'go' to execute, or send modifications."
+                ))
+                return  # Session goes idle, user sees the plan
+
+    # ------------------------------------------------------------------
+    # Tool progress helpers
+    # ------------------------------------------------------------------
+
+    async def _emit_tool_progress(
+        self, content: str, tool_summaries: list[str], last_progress_at: int
+    ) -> None:
+        is_bash = content.startswith("[tool:bash")
+        if is_bash or len(tool_summaries) == 1:
+            await self._emit(OutboundMessage(
+                f"... {content}", meta_type="tool",
+                meta_tool=self._infer_meta_tool_from_summary(content),
+            ))
+        elif len(tool_summaries) - last_progress_at >= 8:
+            await self._emit(OutboundMessage(
+                f"... {' '.join(tool_summaries[-3:])}", meta_type="tool",
+                meta_tool=self._infer_meta_tool_from_summary(tool_summaries[-1]),
+            ))
+
+    @staticmethod
+    def _updated_progress_at(
+        tool_summaries: list[str], last_progress_at: int, content: str
+    ) -> int:
+        is_bash = content.startswith("[tool:bash")
+        if is_bash or len(tool_summaries) == 1:
+            return len(tool_summaries)
+        if len(tool_summaries) - last_progress_at >= 8:
+            return len(tool_summaries)
+        return last_progress_at
 
     async def _send_result(
         self,
@@ -1109,7 +1313,7 @@ class SessionRuntime:
                 meta_attrs=meta_attrs,
             )
         )
-        self._messages.add(
+        await self._messages.add(
             self.session_name,
             "assistant",
             response_parts[-1] if response_parts else "",
@@ -1118,6 +1322,7 @@ class SessionRuntime:
 
     def _create_question_callback(
         self,
+        engine: str = "pi",
     ) -> Callable[[Question], Awaitable[list[list[str]]]]:
         async def question_callback(question: Question) -> list[list[str]]:
             question_text = self._format_question(question)
@@ -1128,13 +1333,13 @@ class SessionRuntime:
                     meta_tool="question",
                     meta_attrs={
                         "version": "1",
-                        "engine": "opencode",
+                        "engine": engine,
                         "request_id": question.request_id,
                         "question_count": str(len(question.questions or [])),
                     },
                     meta_payload={
                         "version": 1,
-                        "engine": "opencode",
+                        "engine": engine,
                         "request_id": question.request_id,
                         "questions": question.questions,
                     },

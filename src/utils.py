@@ -7,17 +7,10 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
-from src.engines import (
-    OPENCODE_MODEL_CODEX,
-    OPENCODE_MODEL_DEFAULT,
-    OPENCODE_MODEL_GPT,
-    OPENCODE_MODEL_GPT_OR,
-    OPENCODE_MODEL_KIMI_CODING,
-    OPENCODE_MODEL_ZEN,
-)
 from slixmpp.clientxmpp import ClientXMPP
 from slixmpp.xmlstream import ET
 
@@ -48,9 +41,9 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
         "oc-codex": {
             "jid": os.getenv("OC_CODEX_JID", f"oc-codex@{domain}"),
             "password": os.getenv("OC_CODEX_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-gpt",
-            "model_id": os.getenv("OC_CODEX_MODEL_ID", OPENCODE_MODEL_CODEX),
+            "model_id": os.getenv("OC_CODEX_MODEL_ID", "openai/gpt-5.3-codex"),
             "label": "Codex 5.3",
         },
         "cc": {
@@ -63,35 +56,35 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
         "oc-gpt": {
             "jid": os.getenv("OC_GPT_JID", f"oc-gpt@{domain}"),
             "password": os.getenv("OC_GPT_PASSWORD", ""),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-gpt",
-            "model_id": os.getenv("OC_GPT_MODEL_ID", OPENCODE_MODEL_GPT),
+            "model_id": os.getenv("OC_GPT_MODEL_ID", "openai/gpt-5.2"),
             "label": "GPT 5.2",
         },
         "oc": {
             "jid": os.getenv("OC_JID", f"oc@{domain}"),
             "password": os.getenv("OC_PASSWORD", ""),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge",
-            "model_id": os.getenv("OC_MODEL_ID", OPENCODE_MODEL_DEFAULT),
-            "label": "GLM 4.7 Heretic",
+            "model_id": os.getenv("OC_MODEL_ID", ""),
+            "label": "Qwen 122B",
         },
         "oc-glm-zen": {
             "jid": os.getenv("OC_GLM_ZEN_JID", f"oc-glm-zen@{domain}"),
             "password": os.getenv(
                 "OC_GLM_ZEN_PASSWORD", os.getenv("XMPP_PASSWORD", "")
             ),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-zen",
-            "model_id": os.getenv("OC_GLM_ZEN_MODEL_ID", OPENCODE_MODEL_ZEN),
+            "model_id": os.getenv("OC_GLM_ZEN_MODEL_ID", "opencode/glm-4.7"),
             "label": "GLM 4.7 Zen",
         },
         "oc-gpt-or": {
             "jid": os.getenv("OC_GPT_OR_JID", f"oc-gpt-or@{domain}"),
             "password": os.getenv("OC_GPT_OR_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-gpt-or",
-            "model_id": os.getenv("OC_GPT_OR_MODEL_ID", OPENCODE_MODEL_GPT_OR),
+            "model_id": os.getenv("OC_GPT_OR_MODEL_ID", "openrouter/openai/gpt-5.2"),
             "label": "GPT 5.2 OR",
         },
         "oc-kimi-coding": {
@@ -99,10 +92,10 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             "password": os.getenv(
                 "OC_KIMI_CODING_PASSWORD", os.getenv("XMPP_PASSWORD", "")
             ),
-            "engine": "opencode",
+            "engine": "pi",
             "agent": "bridge-kimi-coding",
             "model_id": os.getenv(
-                "OC_KIMI_CODING_MODEL_ID", OPENCODE_MODEL_KIMI_CODING
+                "OC_KIMI_CODING_MODEL_ID", "kimi-for-coding/kimi-k2.5"
             ),
             "label": "Kimi K2.5 Coding",
         },
@@ -141,7 +134,7 @@ def _normalize_dispatchers(payload: object, *, domain: str) -> dict[str, dict]:
         elif isinstance(item.get("password_env"), str):
             password = os.getenv(item.get("password_env", ""), "").strip()
 
-        engine = str(item.get("engine") or "opencode").strip().lower()
+        engine = str(item.get("engine") or "pi").strip().lower()
         agent = item.get("agent")
         if isinstance(agent, str):
             agent = agent.strip() or None
@@ -314,7 +307,7 @@ def run_ejabberdctl(ejabberd_ctl: str, *args) -> tuple[bool, str]:
     """Run an ejabberdctl command via SSH or locally."""
     if ejabberd_ctl.startswith("ssh "):
         parts = ejabberd_ctl.split(maxsplit=2)
-        remote_cmd = parts[2] + " " + " ".join(args)
+        remote_cmd = parts[2] + " " + " ".join(shlex.quote(a) for a in args)
         cmd = ["ssh", parts[1], remote_cmd]
     else:
         cmd = ejabberd_ctl.split() + list(args)

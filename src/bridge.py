@@ -2,7 +2,7 @@
 """
 Switch - XMPP AI Assistant Bridge
 
-Each OpenCode/Claude session gets its own XMPP account, appearing as a separate
+Each session gets its own XMPP account, appearing as a separate
 chat contact in the client.
 
 Dispatcher contacts are configured at runtime (supports 1..N dispatchers).
@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 from pathlib import Path
 
 from src.attachments import AttachmentStore
@@ -53,73 +54,88 @@ log = logging.getLogger("bridge")
 async def main():
     db = init_db()
 
-    # Serve attachments over HTTP so chat clients can open `public_url` links.
-    attachments_server = None
-    attachments_cfg = get_attachments_config()
-    attachments_store = AttachmentStore(
-        base_dir=attachments_cfg.base_dir,
-        public_base_url=attachments_cfg.public_base_url,
-        token=attachments_cfg.token,
-    )
-    if os.getenv("SWITCH_ATTACHMENTS_ENABLE", "1").lower() in {"1", "true", "yes"}:
-        try:
-            attachments_server, host, port = await start_attachments_server(
-                attachments_store.base_dir,
-                token=attachments_cfg.token,
-                host=attachments_cfg.host,
-                port=attachments_cfg.port,
-            )
-            log.info(f"Attachments server listening on http://{host}:{port}")
-        except Exception:
-            log.exception("Failed to start attachments server")
-
-    manager = SessionManager(
-        db=db,
-        working_dir=WORKING_DIR,
-        output_dir=SESSION_OUTPUT_DIR,
-        xmpp_server=XMPP_SERVER,
-        xmpp_domain=XMPP_DOMAIN,
-        xmpp_recipient=XMPP_RECIPIENT,
-        ejabberd_ctl=EJABBERD_CTL,
-        dispatchers_config=DISPATCHERS,
-    )
-
-    # Start directory service (XEP-0030 + pubsub refresh).
     try:
-        directory_jid = DIRECTORY_CFG.get("jid")
-        directory_password = DIRECTORY_CFG.get("password")
-        if directory_jid and directory_password:
-            if DIRECTORY_CFG.get("autocreate"):
-                username = directory_jid.split("@")[0]
-                # Best-effort: if account already exists, ejabberd will return conflict.
-                create_xmpp_account(
-                    username,
-                    directory_password,
-                    EJABBERD_CTL,
-                    XMPP_DOMAIN,
-                    log,
-                    allow_conflict=True,
+        # Serve attachments over HTTP so chat clients can open `public_url` links.
+        attachments_server = None
+        attachments_cfg = get_attachments_config()
+        attachments_store = AttachmentStore(
+            base_dir=attachments_cfg.base_dir,
+            public_base_url=attachments_cfg.public_base_url,
+            token=attachments_cfg.token,
+        )
+        if os.getenv("SWITCH_ATTACHMENTS_ENABLE", "1").lower() in {"1", "true", "yes"}:
+            try:
+                attachments_server, host, port = await start_attachments_server(
+                    attachments_store.base_dir,
+                    token=attachments_cfg.token,
+                    host=attachments_cfg.host,
+                    port=attachments_cfg.port,
                 )
-            await manager.start_directory_service(
-                jid=directory_jid,
-                password=directory_password,
-                pubsub_service_jid=PUBSUB_SERVICE,
-            )
-        else:
-            log.info(
-                "Directory service disabled (missing SWITCH_DIRECTORY_JID/PASSWORD)"
-            )
-    except Exception:
-        log.exception("Failed to start directory service")
-    await manager.restore_sessions()
-    await manager.start_dispatchers()
+                log.info(f"Attachments server listening on http://{host}:{port}")
+            except Exception:
+                log.exception("Failed to start attachments server")
 
-    while True:
-        await asyncio.sleep(1)
+        manager = SessionManager(
+            db=db,
+            working_dir=WORKING_DIR,
+            output_dir=SESSION_OUTPUT_DIR,
+            xmpp_server=XMPP_SERVER,
+            xmpp_domain=XMPP_DOMAIN,
+            xmpp_recipient=XMPP_RECIPIENT,
+            ejabberd_ctl=EJABBERD_CTL,
+            dispatchers_config=DISPATCHERS,
+        )
+
+        # Start directory service (XEP-0030 + pubsub refresh).
+        try:
+            directory_jid = DIRECTORY_CFG.get("jid")
+            directory_password = DIRECTORY_CFG.get("password")
+            if directory_jid and directory_password:
+                if DIRECTORY_CFG.get("autocreate"):
+                    username = directory_jid.split("@")[0]
+                    # Best-effort: if account already exists, ejabberd will return conflict.
+                    create_xmpp_account(
+                        username,
+                        directory_password,
+                        EJABBERD_CTL,
+                        XMPP_DOMAIN,
+                        log,
+                        allow_conflict=True,
+                    )
+                await manager.start_directory_service(
+                    jid=directory_jid,
+                    password=directory_password,
+                    pubsub_service_jid=PUBSUB_SERVICE,
+                )
+            else:
+                log.info(
+                    "Directory service disabled (missing SWITCH_DIRECTORY_JID/PASSWORD)"
+                )
+        except Exception:
+            log.exception("Failed to start directory service")
+        await manager.restore_sessions()
+        await manager.start_dispatchers()
+
+        # Graceful shutdown on SIGINT/SIGTERM.
+        shutdown_event = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, shutdown_event.set)
+
+        await shutdown_event.wait()
+        log.info("Signal received, shutting down gracefully...")
+        await manager.shutdown()
+    finally:
+        log.info("Closing database connection")
+        try:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except Exception:
+            log.warning("WAL checkpoint failed", exc_info=True)
+        db.close()
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.info("Shutting down...")
+        pass

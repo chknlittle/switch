@@ -69,18 +69,20 @@ class SessionManager:
         try:
             self.directory.notify_sessions_changed(dispatcher_jid=dispatcher_jid)
         except Exception:
-            pass
+            log.warning("Failed to notify directory of session change", exc_info=True)
 
     async def start_session_bot(
         self, name: str, jid: str, password: str, xmpp_recipient: str
     ) -> SessionBot:
         """Start a session bot."""
+        session_work_dir = os.path.join(self.working_dir, "sessions", name)
+        os.makedirs(session_work_dir, exist_ok=True)
         bot = SessionBot(
             name,
             jid,
             password,
             self.db,
-            self.working_dir,
+            session_work_dir,
             self.output_dir,
             xmpp_recipient,
             self.xmpp_domain,
@@ -97,9 +99,8 @@ class SessionManager:
         created = await lifecycle_create_session(
             self,
             message,
-            engine="opencode",
-            opencode_agent="bridge",
-            label="OpenCode",
+            engine="pi",
+            label="Pi",
             dispatcher_jid=None,
         )
         if not created:
@@ -132,13 +133,39 @@ class SessionManager:
                 self.ejabberd_ctl,
                 manager=self,
                 engine=cfg["engine"],
-                opencode_agent=cfg["agent"],
                 model_id=cfg.get("model_id"),
                 label=cfg["label"],
             )
             dispatcher.connect_to_server(self.xmpp_server)
             self.dispatchers[name] = dispatcher
             log.info(f"Started dispatcher: {name} ({cfg['jid']})")
+
+    async def shutdown(self) -> None:
+        """Gracefully shut down all bots, runners, and subprocesses."""
+        log.info("Shutting down %d session(s)...", len(self.session_bots))
+        for name, bot in list(self.session_bots.items()):
+            try:
+                bot.cancel_operations(notify=False)
+                if hasattr(bot, '_runtime'):
+                    bot._runtime.shutdown()
+                bot.disconnect(wait=False)
+            except Exception:
+                log.warning("Error shutting down session %s", name, exc_info=True)
+
+        for name, dispatcher in list(self.dispatchers.items()):
+            try:
+                dispatcher.disconnect(wait=False)
+            except Exception:
+                log.warning("Error shutting down dispatcher %s", name, exc_info=True)
+
+        if self.directory:
+            try:
+                self.directory.disconnect(wait=False)
+            except Exception:
+                log.warning("Error shutting down directory", exc_info=True)
+
+        # Give XMPP stanzas a moment to flush.
+        await asyncio.sleep(0.5)
 
     async def restore_sessions(self):
         """Restore existing sessions from DB."""

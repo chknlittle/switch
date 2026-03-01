@@ -1,73 +1,20 @@
 [
   {
-    "name": "acorn",
-    "jid": "acorn@100.119.143.40",
-    "password_env": "ACORN_PASSWORD",
-    "engine": "external",
-    "agent": null,
-    "label": "Acorn",
-    "direct": true
-  },
-  {
-    "name": "oc-codex",
-    "jid": "oc-codex@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "opencode",
-    "agent": "bridge-gpt",
-    "model_id": "openai/gpt-5.3-codex",
-    "label": "Codex 5.3"
-  },
-  {
-    "name": "cc",
-    "jid": "cc@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "claude",
-    "agent": null,
-    "label": "Claude Code"
-  },
-  {
-    "name": "oc-gpt",
-    "jid": "oc-gpt@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "opencode",
-    "agent": "bridge-gpt",
-    "model_id": "openai/gpt-5.2",
-    "label": "GPT 5.2"
-  },
-  {
     "name": "oc",
-    "jid": "oc@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "opencode",
+    "jid": "oc@localhost",
+    "password_env": "OC_PASSWORD",
+    "engine": "pi",
     "agent": "bridge",
-    "model_id": "glm_vllm/glm-4.7-flash",
-    "label": "GLM 4.7 Heretic"
+    "model_id": null,
+    "label": "Qwen 122B"
   },
   {
-    "name": "oc-glm-zen",
-    "jid": "oc-glm-zen@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "opencode",
-    "agent": "bridge-zen",
-    "model_id": "opencode/glm-4.7",
-    "label": "GLM 4.7 Zen"
-  },
-  {
-    "name": "oc-gpt-or",
-    "jid": "oc-gpt-or@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "opencode",
-    "agent": "bridge-gpt-or",
-    "model_id": "openrouter/openai/gpt-5.2",
-    "label": "GPT 5.2 OR"
-  },
-  {
-    "name": "oc-kimi-coding",
-    "jid": "oc-kimi-coding@100.119.143.40",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "opencode",
-    "agent": "bridge-kimi-coding",
-    "model_id": "kimi-for-coding/kimi-k2.5",
-    "label": "Kimi K2.5 Coding"
+    "name": "debate",
+    "jid": "debate@localhost",
+    "password_env": "DEBATE_PASSWORD",
+    "engine": "debate",
+    "agent": null,
+    "model_id": null,
+    "label": "Debate"
   }
 ]

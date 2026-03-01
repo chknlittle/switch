@@ -9,6 +9,7 @@ from src.engines import normalize_engine
 from src.core.session_runtime.api import RalphConfig
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.ralph import parse_ralph_command
+from src.runners.pi.runner import PiRunner
 
 if TYPE_CHECKING:
     from src.bots.session import SessionBot
@@ -119,15 +120,15 @@ class CommandHandler:
         """Switch active engine."""
         parts = body.strip().lower().split()
         if len(parts) < 2:
-            self.bot.send_reply("Usage: /agent oc|cc")
+            self.bot.send_reply("Usage: /agent oc|cc|pi")
             return True
 
         engine = normalize_engine(parts[1])
         if not engine:
-            self.bot.send_reply("Usage: /agent oc|cc")
+            self.bot.send_reply("Usage: /agent oc|cc|pi")
             return True
 
-        self.bot.sessions.update_engine(self.bot.session_name, engine)
+        await self.bot.sessions.update_engine(self.bot.session_name, engine)
         self.bot.send_reply(f"Active engine set to {engine}.")
         return True
 
@@ -145,11 +146,11 @@ class CommandHandler:
             return True
 
         engine = (session.active_engine or "").strip().lower()
-        if engine != "opencode":
-            self.bot.send_reply("/thinking only applies to OpenCode sessions.")
+        if engine != "pi":
+            self.bot.send_reply("/thinking only applies to Pi sessions.")
             return True
 
-        self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])
+        await self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])
         self.bot.send_reply(f"Reasoning mode set to {parts[1]}.")
         return True
 
@@ -162,7 +163,7 @@ class CommandHandler:
             return True
 
         model_id = parts[1].strip()
-        self.bot.sessions.update_model(self.bot.session_name, model_id)
+        await self.bot.sessions.update_model(self.bot.session_name, model_id)
         self.bot.send_reply(f"Model set to {model_id}.")
         return True
 
@@ -179,13 +180,30 @@ class CommandHandler:
 
         engine = (session.active_engine or "").strip().lower()
         if engine == "claude":
-            self.bot.sessions.reset_claude_session(self.bot.session_name)
-        elif engine == "opencode":
-            self.bot.sessions.reset_opencode_session(self.bot.session_name)
+            await self.bot.sessions.reset_claude_session(self.bot.session_name)
+        elif engine in {"pi", "debate"}:
+            await self.bot.sessions.reset_pi_session(self.bot.session_name)
         else:
             self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
             return True
         self.bot.send_reply("Session reset.")
+        return True
+
+    @command("/compact")
+    async def compact(self, _body: str) -> bool:
+        """Compact Pi's context window."""
+        runner = self.bot.session.runner
+        if not isinstance(runner, PiRunner):
+            self.bot.send_reply("Not a Pi session — /compact only works with Pi.")
+            return True
+        if not self.bot.processing:
+            self.bot.send_reply("No active Pi process to compact.")
+            return True
+        sent = await runner.compact()
+        if sent:
+            self.bot.send_reply("Compacting context...")
+        else:
+            self.bot.send_reply("Failed to send compact (process not running).")
         return True
 
     @command("/ralph-cancel", "/ralph-stop")
@@ -270,8 +288,7 @@ class CommandHandler:
                 return True
 
             parent = self.bot.sessions.get(self.bot.session_name)
-            engine = parent.active_engine if parent else "opencode"
-            agent = parent.opencode_agent if parent else "bridge"
+            engine = parent.active_engine if parent else "pi"
             model_id = parent.model_id if parent else None
 
             names: list[str] = []
@@ -280,7 +297,6 @@ class CommandHandler:
                     self.bot.manager,
                     "",
                     engine=engine,
-                    opencode_agent=agent,
                     model_id=model_id,
                     label=None,
                     name_hint="ralph",
@@ -324,6 +340,154 @@ class CommandHandler:
                 prompt_only=bool(ralph_args.get("prompt_only")),
             )
         )
+        return True
+
+    @command("/last")
+    async def last(self, _body: str) -> bool:
+        """Show last assistant message."""
+        messages = self.bot.messages.list_recent(self.bot.session_name, limit=10)
+        for msg in messages:  # newest-first (ORDER BY id DESC)
+            if msg.role == "assistant" and msg.content.strip():
+                self.bot.send_reply(msg.content)
+                return True
+        self.bot.send_reply("No assistant messages in this session.")
+        return True
+
+    @command("/retry")
+    async def retry(self, _body: str) -> bool:
+        """Re-run last user prompt."""
+        if self.bot.processing:
+            self.bot.send_reply("Already processing. /cancel first, then /retry.")
+            return True
+        if self.bot.session.debate_awaiting():
+            self.bot.send_reply("Debate is waiting for your input. Reply directly or /cancel first.")
+            return True
+        messages = self.bot.messages.list_recent(self.bot.session_name, limit=20)
+        for msg in messages:
+            if msg.role == "user" and msg.content.strip():
+                self.bot.send_reply(f"Retrying: {msg.content[:80]}...")
+                await self.bot.session.enqueue(
+                    msg.content, None,
+                    trigger_response=True, scheduled=False, wait=False,
+                )
+                return True
+        self.bot.send_reply("No user messages to retry.")
+        return True
+
+    @command("/recap")
+    async def recap(self, _body: str) -> bool:
+        """Summarize session history."""
+        if self.bot.processing:
+            self.bot.send_reply("Already processing. Try /recap after current work completes.")
+            return True
+        if self.bot.session.debate_awaiting():
+            self.bot.send_reply("Debate is waiting for your input. Reply directly or /cancel first.")
+            return True
+        messages = self.bot.messages.list_recent(self.bot.session_name, limit=40)
+        if not messages:
+            self.bot.send_reply("No messages in this session.")
+            return True
+
+        # Chronological order, truncate long messages
+        messages = list(reversed(messages))
+        lines = []
+        for msg in messages:
+            prefix = "User" if msg.role == "user" else "Assistant"
+            content = msg.content[:500] + ("..." if len(msg.content) > 500 else "")
+            lines.append(f"{prefix}: {content}")
+
+        recap_prompt = (
+            "Summarize this conversation concisely. "
+            "Key decisions, open questions, current status. Under 300 words.\n\n"
+            "---\n" + "\n\n".join(lines) + "\n---"
+        )
+        self.bot.send_reply("Generating recap...")
+        await self.bot.session.enqueue(
+            recap_prompt, None,
+            trigger_response=True, scheduled=False, wait=False,
+        )
+        return True
+
+    @command("/context", exact=False)
+    async def context(self, body: str) -> bool:
+        """Inject cross-session history."""
+        parts = body.strip().split()
+        source_name = None
+        limit = 20
+
+        for part in parts[1:]:
+            if part.startswith("from:"):
+                source_name = part[5:]
+            else:
+                try:
+                    limit = int(part)
+                except ValueError:
+                    pass
+
+        if not source_name:
+            self.bot.send_reply("Usage: /context from:<session-name> [limit]")
+            return True
+
+        source = self.bot.sessions.get(source_name)
+        if not source:
+            self.bot.send_reply(f"Session '{source_name}' not found.")
+            return True
+
+        messages = self.bot.messages.list_recent(source_name, limit=limit)
+        if not messages:
+            self.bot.send_reply(f"No messages in '{source_name}'.")
+            return True
+
+        messages = list(reversed(messages))  # chronological
+        lines = []
+        for msg in messages:
+            prefix = "User" if msg.role == "user" else "Assistant"
+            content = msg.content[:800] + ("..." if len(msg.content) > 800 else "")
+            lines.append(f"{prefix}: {content}")
+
+        context_text = (
+            f"[Context from session '{source_name}' — {len(messages)} messages. "
+            "Use this as background for the conversation.]\n\n"
+            + "\n\n".join(lines)
+        )
+
+        self.bot.session.set_context_prefix(context_text)
+        self.bot.send_reply(
+            f"Loaded {len(messages)} messages from '{source_name}'. "
+            "Your next message will include this context."
+        )
+        return True
+
+    @command("/handoff", exact=False)
+    async def handoff(self, body: str) -> bool:
+        """Hand off to another engine."""
+        parts = body.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude")
+            return True
+
+        engine = normalize_engine(parts[1])
+        if not engine or engine == "debate":
+            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude")
+            return True
+
+        if self.bot.processing:
+            self.bot.send_reply("Already processing. /cancel first.")
+            return True
+
+        prompt = parts[2].strip() if len(parts) > 2 else None
+        if not prompt:
+            messages = self.bot.messages.list_recent(self.bot.session_name, limit=10)
+            for msg in messages:
+                if msg.role == "assistant" and msg.content.strip():
+                    prompt = msg.content
+                    break
+            if not prompt:
+                self.bot.send_reply("No prompt and no assistant messages to hand off.")
+                return True
+
+        self.bot.send_reply(f"Handing off to {engine}...")
+        await self.bot.session.run_handoff(engine, prompt)
         return True
 
     @command("/ralph-look", "/ralphlook", exact=False)

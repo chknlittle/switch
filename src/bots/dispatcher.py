@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Coroutine, cast
 
 from src.db import SessionRepository
-from src.engines import OPENCODE_MODEL_DEFAULT
+from src.engines import PI_MODEL_DEFAULT
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.ralph import parse_ralph_command
 from src.runners import create_runner
-from src.runners.opencode.config import OpenCodeConfig
+from src.runners.pi.config import PiConfig
 from src.utils import BaseXMPPBot
 
 if TYPE_CHECKING:
@@ -26,14 +26,10 @@ if TYPE_CHECKING:
 class DispatcherBot(BaseXMPPBot):
     """Dispatcher bot that creates new session bots.
 
-    Each dispatcher is tied to a specific engine/agent:
-    - cc: Claude Code
-    - oc: OpenCode with GLM 4.7 Heretic (bridge agent)
-    - oc-gpt: OpenCode with GPT 5.2 (bridge-gpt agent)
-    - oc-codex: OpenCode with Codex 5.3 (bridge-gpt agent + model override)
-    - oc-glm-zen: OpenCode with GLM 4.7 via Zen (bridge-zen agent)
-    - oc-gpt-or: OpenCode with GPT 5.2 via OpenRouter (bridge-gpt-or agent)
-    - oc-kimi-coding: OpenCode with Kimi K2.5 via Kimi for Coding (bridge-kimi-coding agent)
+    Each dispatcher is tied to a specific engine:
+    - cc/claude: Claude Code
+    - pi: Pi (Qwen/GLM via local inference)
+    - debate: Multi-model debate
     """
 
     _WITH_FLAG_RE = re.compile(
@@ -51,10 +47,9 @@ class DispatcherBot(BaseXMPPBot):
         ejabberd_ctl: str,
         manager: "SessionManager | None" = None,
         *,
-        engine: str = "opencode",
-        opencode_agent: str | None = "bridge",
+        engine: str = "pi",
         model_id: str | None = None,
-        label: str = "GLM 4.7 Heretic",
+        label: str = "Pi",
     ):
         super().__init__(jid, password)
         # Initialize logger early because Slixmpp can deliver stanzas before
@@ -68,7 +63,6 @@ class DispatcherBot(BaseXMPPBot):
         self.ejabberd_ctl = ejabberd_ctl
         self.manager: SessionManager | None = manager
         self.engine = engine
-        self.opencode_agent = opencode_agent
         self.model_id = model_id
         self.label = label
 
@@ -96,11 +90,25 @@ class DispatcherBot(BaseXMPPBot):
     def on_disconnected(self, event):
         self.log.warning("Dispatcher disconnected, reconnecting...")
         self.set_connected(False)
-        asyncio.ensure_future(self._reconnect())
+        if not getattr(self, "_reconnecting", False):
+            self._reconnecting = True
+            asyncio.ensure_future(self._reconnect())
 
     async def _reconnect(self):
-        await asyncio.sleep(5)
-        self.connect()
+        delay = 2
+        max_delay = 120
+        max_attempts = 50
+        for attempt in range(1, max_attempts + 1):
+            await asyncio.sleep(delay)
+            try:
+                self.connect()
+                self._reconnecting = False
+                return
+            except Exception:
+                self.log.warning("Dispatcher reconnect attempt %d failed", attempt)
+                delay = min(delay * 2, max_delay)
+        self.log.error("Dispatcher gave up reconnecting after %d attempts", max_attempts)
+        self._reconnecting = False
 
     async def on_message(self, msg):
         recipient = str(msg["from"].bare) if msg["type"] in ("chat", "normal") else None
@@ -267,12 +275,11 @@ class DispatcherBot(BaseXMPPBot):
             working_dir = str(repo_path)
 
         runner = create_runner(
-            "opencode",
+            "pi",
             working_dir=working_dir,
             output_dir=Path(self.working_dir) / "output",
-            opencode_config=OpenCodeConfig(
-                model=OPENCODE_MODEL_DEFAULT,
-                agent="bridge",
+            pi_config=PiConfig(
+                model=PI_MODEL_DEFAULT or None,
             ),
         )
 
@@ -449,7 +456,6 @@ class DispatcherBot(BaseXMPPBot):
                 manager,
                 "",
                 engine=self.engine,
-                opencode_agent=self.opencode_agent,
                 model_id=self.model_id,
                 label=self.label,
                 name_hint="ralph",
@@ -516,7 +522,6 @@ class DispatcherBot(BaseXMPPBot):
             self.manager,
             message or first_message,
             engine=self.engine,
-            opencode_agent=self.opencode_agent,
             model_id=self.model_id,
             label=self.label,
             on_reserved=lambda n: self.send_reply(
