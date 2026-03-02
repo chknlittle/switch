@@ -82,8 +82,9 @@ class OpenCodeTransport:
         event_queue: asyncio.Queue[dict],
     ) -> tuple[asyncio.Task, asyncio.Task]:
         sse_task = asyncio.create_task(
-            self._client.stream_events(
-                session, event_queue, should_stop=lambda: self._cancelled
+            self._stream_events_safe(
+                session=session,
+                event_queue=event_queue,
             )
         )
         message_task = asyncio.create_task(
@@ -97,6 +98,32 @@ class OpenCodeTransport:
             )
         )
         return sse_task, message_task
+
+    async def _stream_events_safe(
+        self,
+        *,
+        session: aiohttp.ClientSession,
+        event_queue: asyncio.Queue[dict],
+    ) -> None:
+        """Best-effort SSE consumer.
+
+        Streaming failures should not kill the whole run because we can still
+        finalize via message response + message polling.
+        """
+        try:
+            await self._client.stream_events(
+                session,
+                event_queue,
+                should_stop=lambda: self._cancelled,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning(
+                "OpenCode SSE stream unavailable; continuing without live stream: %s: %s",
+                type(e).__name__,
+                e,
+            )
 
     async def finalize(
         self,
