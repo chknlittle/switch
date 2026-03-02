@@ -260,10 +260,22 @@ class OpenCodeClient:
         # Avoid aiohttp's line-based iteration (`readline()`), which can raise
         # ValueError("Chunk too big") when a single SSE line exceeds the stream
         # reader limit. Instead, read raw chunks and split events on blank lines.
-        max_buf = int(os.getenv("OPENCODE_SSE_MAX_BUFFER_BYTES", str(16 * 1024 * 1024)))
+        def _int_env(name: str, default: int) -> int:
+            raw = os.getenv(name, str(default))
+            try:
+                value = int(raw)
+            except ValueError:
+                log.warning("Invalid %s=%r; using %d", name, raw, default)
+                return default
+            if value <= 0:
+                log.warning("Non-positive %s=%r; using %d", name, raw, default)
+                return default
+            return value
+
+        max_buf = _int_env("OPENCODE_SSE_MAX_BUFFER_BYTES", 16 * 1024 * 1024)
         # When an individual event (or a delimiter-less stream chunk) grows too
         # large, drop it instead of crashing the whole run.
-        max_event = int(os.getenv("OPENCODE_SSE_MAX_EVENT_BYTES", str(8 * 1024 * 1024)))
+        max_event = _int_env("OPENCODE_SSE_MAX_EVENT_BYTES", 8 * 1024 * 1024)
 
         buf = bytearray()
 
@@ -291,7 +303,7 @@ class OpenCodeClient:
                     event_bytes, consumed = _split_event(buf)
                     if event_bytes is None:
                         # No complete event boundary yet; keep a small tail and continue.
-                        keep = min(len(buf), max(max_event, 256 * 1024))
+                        keep = min(len(buf), min(max(max_event, 256 * 1024), max_buf))
                         del buf[:-keep]
                         break
                     del buf[:consumed]
