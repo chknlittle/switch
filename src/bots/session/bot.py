@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
     from src.db import Session
     from src.manager import SessionManager
+    from src.voice import VoiceCallManager
 
 
 class SessionBot(BaseXMPPBot):
@@ -112,6 +113,14 @@ class SessionBot(BaseXMPPBot):
         self.session: SessionPort = self._runtime
         self.attachment_store = AttachmentStore()
         self.commands = CommandHandler(self)
+
+        # Voice call support (Jingle + faster-whisper), gated by env flag.
+        self._voice: VoiceCallManager | None = None
+        if os.getenv("SWITCH_VOICE_ENABLED", "0").strip().lower() in {
+            "1", "true", "yes", "on",
+        }:
+            from src.voice import VoiceCallManager as _VCM
+            self._voice = _VCM(self, self.session)
 
         self.register_plugin("xep_0045")
 
@@ -295,6 +304,13 @@ class SessionBot(BaseXMPPBot):
                 self.disconnect()
                 self.set_connected(False)
                 return
+        # Register voice call handlers if enabled.
+        if self._voice:
+            try:
+                self._voice.register_handlers()
+            except Exception:
+                self.log.warning("Failed to register voice handlers", exc_info=True)
+
         self.log.info("Connected")
         self.set_connected(True)
         self._reconnect_attempt = 0
@@ -511,6 +527,10 @@ class SessionBot(BaseXMPPBot):
         if cancelled_any:
             self._maybe_hard_abort_vllm()
 
+        # Hang up any active voice calls.
+        if self._voice and self._voice.active_call_count > 0:
+            asyncio.ensure_future(self._voice.hangup_all())
+
         return cancelled_any
 
     def _maybe_hard_abort_vllm(self) -> None:
@@ -632,6 +652,9 @@ class SessionBot(BaseXMPPBot):
             return
 
         self.shutting_down = True
+
+        if self._voice:
+            await self._voice.shutdown()
 
         self._runtime.shutdown()
 

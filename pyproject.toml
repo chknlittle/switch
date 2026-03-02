@@ -9,6 +9,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+voice = [
+    "aiortc>=1.9.0",
+    "faster-whisper>=1.0.0",
+    "webrtcvad>=2.0.10",
+    "numpy",
+]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

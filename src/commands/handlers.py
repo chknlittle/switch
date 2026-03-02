@@ -490,6 +490,25 @@ class CommandHandler:
         await self.bot.session.run_handoff(engine, prompt)
         return True
 
+    @command("/call")
+    async def call(self, _body: str) -> bool:
+        """Show active voice call status."""
+        voice = getattr(self.bot, "_voice", None)
+        if voice is None:
+            self.bot.send_reply("Voice calls are not enabled (set SWITCH_VOICE_ENABLED=1).")
+            return True
+
+        count = voice.active_call_count
+        if count == 0:
+            self.bot.send_reply("No active voice calls.")
+        else:
+            sids = voice.active_call_sids
+            lines = [f"Active voice calls: {count}"]
+            for sid in sids:
+                lines.append(f"  - {sid}")
+            self.bot.send_reply("\n".join(lines))
+        return True
+
     @command("/ralph-look", "/ralphlook", exact=False)
     async def ralph_look(self, body: str) -> bool:
         """Start a prompt-only Ralph loop (fresh context every iteration)."""
