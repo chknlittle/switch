@@ -164,3 +164,7 @@ class ClaudeRunner(BaseRunner):
     def cancel(self) -> None:
         """Terminate the running process."""
         self._transport.cancel()
+
+    async def cleanup(self) -> None:
+        """Terminate and force-kill if the process doesn't exit."""
+        await self._transport.cancel_and_kill()

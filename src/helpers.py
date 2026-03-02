@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import sqlite3
@@ -12,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from src.utils import run_ejabberdctl
+
+log = logging.getLogger(__name__)
 
 HISTORY_PATH = Path.home() / ".claude" / "history.jsonl"
 ACTIVITY_LOG_PATH = Path.home() / ".claude" / "activity.jsonl"
@@ -27,11 +30,21 @@ def _is_conflict_output(output: str) -> bool:
     )
 
 
+_STOPWORDS = frozenset({
+    "please", "can", "you", "could", "would", "help", "me", "i", "want",
+    "need", "to", "a", "an", "the", "my", "this", "that", "make", "write",
+    "create", "build", "do", "just", "some", "with", "for", "and", "is",
+    "it", "be", "have", "has", "how", "what", "lets", "let",
+})
+
+
 def slugify(text: str, max_len: int = 20) -> str:
     """Convert text to a safe session/username."""
-    words = text.lower().split()[:4]
-    slug = "-".join(words)
-    slug = re.sub(r"[^a-z0-9\\-]", "", slug)
+    words = text.lower().split()
+    meaningful = [w for w in words if w not in _STOPWORDS]
+    chosen = (meaningful or words)[:4]  # fall back to original if all filtered
+    slug = "-".join(chosen)
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
     slug = slug[:max_len].rstrip("-")
     return slug or f"session-{secrets.token_hex(4)}"
 
@@ -49,7 +62,7 @@ def append_to_history(message: str, project: str, session_id: str | None = None)
         with open(HISTORY_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception:
-        pass
+        log.debug("Failed to append to history file", exc_info=True)
 
 
 def log_activity(message: str, session: str | None = None, source: str = "xmpp"):
@@ -64,7 +77,7 @@ def log_activity(message: str, session: str | None = None, source: str = "xmpp")
         with open(ACTIVITY_LOG_PATH, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except Exception:
-        pass
+        log.debug("Failed to append to activity log", exc_info=True)
 
 
 def create_xmpp_account(

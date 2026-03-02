@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+
+log = logging.getLogger(__name__)
 
 
 class SubprocessTransport:
@@ -38,3 +41,21 @@ class SubprocessTransport:
     def cancel(self) -> None:
         if self.process:
             self.process.terminate()
+
+    async def cancel_and_kill(self, timeout: float = 5.0) -> None:
+        """Terminate the process, wait, then force-kill if still alive."""
+        proc = self.process
+        if not proc:
+            return
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            log.warning("Process %s did not exit after SIGTERM, sending SIGKILL", proc.pid)
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass

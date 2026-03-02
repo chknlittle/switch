@@ -10,15 +10,35 @@ Provides:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from src.engines import OPENCODE_MODEL_DEFAULT, OPENCODE_MODEL_GPT
+log = logging.getLogger(__name__)
+
 
 DB_PATH = Path(__file__).parent.parent / "sessions.db"
+
+
+_write_locks: dict[int, asyncio.Lock] = {}
+
+
+def _shared_write_lock(conn: sqlite3.Connection) -> asyncio.Lock:
+    """Return a single shared write lock for a given connection.
+
+    All repositories sharing the same connection MUST use this lock so that
+    concurrent writes are serialized.  Keyed by connection id().
+    """
+    key = id(conn)
+    lock = _write_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _write_locks[key] = lock
+    return lock
 
 
 @dataclass
@@ -29,9 +49,8 @@ class Session:
     xmpp_jid: str
     xmpp_password: str
     claude_session_id: str | None
-    opencode_session_id: str | None
+    pi_session_id: str | None
     active_engine: str
-    opencode_agent: str
     model_id: str
     reasoning_mode: str
     dispatcher_jid: str | None
@@ -77,6 +96,7 @@ class SessionRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._write_lock = _shared_write_lock(conn)
 
     def _row_to_session(self, row: sqlite3.Row) -> Session:
         return Session(
@@ -84,10 +104,9 @@ class SessionRepository:
             xmpp_jid=row["xmpp_jid"],
             xmpp_password=row["xmpp_password"],
             claude_session_id=row["claude_session_id"],
-            opencode_session_id=row["opencode_session_id"],
-            active_engine=row["active_engine"] or "opencode",
-            opencode_agent=row["opencode_agent"] or "bridge",
-            model_id=row["model_id"] or OPENCODE_MODEL_DEFAULT,
+            pi_session_id=row["pi_session_id"] if "pi_session_id" in row.keys() else None,
+            active_engine=row["active_engine"] or "pi",
+            model_id=row["model_id"] or None,
             reasoning_mode=row["reasoning_mode"] or "normal",
             dispatcher_jid=row["dispatcher_jid"]
             if "dispatcher_jid" in row.keys()
@@ -211,15 +230,14 @@ class SessionRepository:
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
-    def create(
+    async def create(
         self,
         name: str,
         xmpp_jid: str,
         xmpp_password: str,
         tmux_name: str,
-        model_id: str = OPENCODE_MODEL_DEFAULT,
-        opencode_agent: str = "bridge",
-        active_engine: str = "opencode",
+        model_id: str | None = None,
+        active_engine: str = "pi",
         reasoning_mode: str = "normal",
         dispatcher_jid: str | None = None,
         owner_jid: str | None = None,
@@ -228,101 +246,113 @@ class SessionRepository:
         owner_bare = (owner_jid or "").split("/", 1)[0] or None
         room_bare = (room_jid or "").split("/", 1)[0] or None
         now = datetime.now().isoformat()
-        self.conn.execute(
-            """INSERT INTO sessions
-               (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                model_id, opencode_agent, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                name,
-                xmpp_jid,
-                xmpp_password,
-                tmux_name,
-                now,
-                now,
-                model_id,
-                opencode_agent,
-                active_engine,
-                reasoning_mode,
-                dispatcher_jid,
-                owner_bare,
-                room_bare,
-            ),
-        )
-        self.conn.commit()
+        async with self._write_lock:
+            self.conn.execute(
+                """INSERT INTO sessions
+                   (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
+                    model_id, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    name,
+                    xmpp_jid,
+                    xmpp_password,
+                    tmux_name,
+                    now,
+                    now,
+                    model_id,
+                    active_engine,
+                    reasoning_mode,
+                    dispatcher_jid,
+                    owner_bare,
+                    room_bare,
+                ),
+            )
+            self.conn.commit()
         created = self.get(name)
         if not created:
             raise RuntimeError(f"Failed to load newly created session: {name}")
         return created
 
-    def update_last_active(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET last_active = ? WHERE name = ?",
-            (datetime.now().isoformat(), name),
-        )
-        self.conn.commit()
+    async def update_last_active(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET last_active = ? WHERE name = ?",
+                (datetime.now().isoformat(), name),
+            )
+            self.conn.commit()
 
-    def update_engine(self, name: str, engine: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET active_engine = ? WHERE name = ?",
-            (engine, name),
-        )
-        self.conn.commit()
+    async def update_engine(self, name: str, engine: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET active_engine = ? WHERE name = ?",
+                (engine, name),
+            )
+            self.conn.commit()
 
-    def update_reasoning_mode(self, name: str, mode: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET reasoning_mode = ? WHERE name = ?",
-            (mode, name),
-        )
-        self.conn.commit()
+    async def update_reasoning_mode(self, name: str, mode: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET reasoning_mode = ? WHERE name = ?",
+                (mode, name),
+            )
+            self.conn.commit()
 
-    def update_model(self, name: str, model_id: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET model_id = ? WHERE name = ?",
-            (model_id, name),
-        )
-        self.conn.commit()
+    async def update_model(self, name: str, model_id: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET model_id = ? WHERE name = ?",
+                (model_id, name),
+            )
+            self.conn.commit()
 
-    def update_claude_session_id(self, name: str, session_id: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET claude_session_id = ? WHERE name = ?",
-            (session_id, name),
-        )
-        self.conn.commit()
+    async def update_claude_session_id(self, name: str, session_id: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET claude_session_id = ? WHERE name = ?",
+                (session_id, name),
+            )
+            self.conn.commit()
 
-    def update_opencode_session_id(self, name: str, session_id: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET opencode_session_id = ? WHERE name = ?",
-            (session_id, name),
-        )
-        self.conn.commit()
+    async def update_pi_session_id(self, name: str, session_id: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET pi_session_id = ? WHERE name = ?",
+                (session_id, name),
+            )
+            self.conn.commit()
 
-    def reset_claude_session(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
-            (name,),
-        )
-        self.conn.commit()
+    async def reset_claude_session(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
+                (name,),
+            )
+            self.conn.commit()
 
-    def reset_opencode_session(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET opencode_session_id = NULL WHERE name = ?",
-            (name,),
-        )
-        self.conn.commit()
+    async def reset_pi_session(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET pi_session_id = NULL WHERE name = ?",
+                (name,),
+            )
+            self.conn.commit()
 
-    def close(self, name: str) -> None:
-        self.conn.execute(
-            "UPDATE sessions SET status = 'closed' WHERE name = ?",
-            (name,),
-        )
-        self.conn.commit()
+    async def close(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET status = 'closed' WHERE name = ?",
+                (name,),
+            )
+            self.conn.commit()
 
-    def delete(self, name: str) -> None:
-        self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
-        self.conn.commit()
+    async def delete(self, name: str) -> None:
+        async with self._write_lock:
+            self.conn.execute("DELETE FROM session_messages WHERE session_name = ?", (name,))
+            self.conn.execute("DELETE FROM ralph_loops WHERE session_name = ?", (name,))
+            self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
+            self.conn.commit()
 
-    def set_collaborators(self, session_name: str, jids: list[str]) -> None:
+    async def set_collaborators(self, session_name: str, jids: list[str]) -> None:
         normalized: list[str] = []
         seen: set[str] = set()
         for jid in jids:
@@ -332,18 +362,19 @@ class SessionRepository:
             seen.add(bare)
             normalized.append(bare)
 
-        self.conn.execute(
-            "DELETE FROM session_collaborators WHERE session_name = ?",
-            (session_name,),
-        )
-        for bare in normalized:
+        async with self._write_lock:
             self.conn.execute(
-                """INSERT OR IGNORE INTO session_collaborators
-                   (session_name, participant_jid)
-                   VALUES (?, ?)""",
-                (session_name, bare),
+                "DELETE FROM session_collaborators WHERE session_name = ?",
+                (session_name,),
             )
-        self.conn.commit()
+            for bare in normalized:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO session_collaborators
+                       (session_name, participant_jid)
+                       VALUES (?, ?)""",
+                    (session_name, bare),
+                )
+            self.conn.commit()
 
     def list_collaborators(self, session_name: str) -> list[str]:
         rows = self.conn.execute(
@@ -361,6 +392,7 @@ class RalphLoopRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._write_lock = _shared_write_lock(conn)
 
     def _row_to_ralph_loop(self, row: sqlite3.Row) -> RalphLoop:
         return RalphLoop(
@@ -388,7 +420,7 @@ class RalphLoopRepository:
         ).fetchone()
         return self._row_to_ralph_loop(row) if row else None
 
-    def create(
+    async def create(
         self,
         session_name: str,
         prompt: str,
@@ -396,25 +428,26 @@ class RalphLoopRepository:
         completion_promise: str | None = None,
         wait_seconds: float = 2.0,
     ) -> int:
-        cursor = self.conn.execute(
-            """INSERT INTO ralph_loops
-               (session_name, prompt, completion_promise, max_iterations, wait_seconds, started_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                session_name,
-                prompt,
-                completion_promise,
-                max_iterations,
-                wait_seconds,
-                datetime.now().isoformat(),
-            ),
-        )
-        self.conn.commit()
-        if cursor.lastrowid is None:
-            raise RuntimeError("Failed to create ralph loop (no rowid)")
-        return int(cursor.lastrowid)
+        async with self._write_lock:
+            cursor = self.conn.execute(
+                """INSERT INTO ralph_loops
+                   (session_name, prompt, completion_promise, max_iterations, wait_seconds, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    session_name,
+                    prompt,
+                    completion_promise,
+                    max_iterations,
+                    wait_seconds,
+                    datetime.now().isoformat(),
+                ),
+            )
+            self.conn.commit()
+            if cursor.lastrowid is None:
+                raise RuntimeError("Failed to create ralph loop (no rowid)")
+            return int(cursor.lastrowid)
 
-    def update_progress(
+    async def update_progress(
         self,
         loop_id: int,
         current_iteration: int,
@@ -422,14 +455,15 @@ class RalphLoopRepository:
         status: str = "running",
     ) -> None:
         finished_at = datetime.now().isoformat() if status != "running" else None
-        self.conn.execute(
-            """UPDATE ralph_loops
-               SET current_iteration = ?, total_cost = ?, status = ?,
-                   finished_at = COALESCE(?, finished_at)
-               WHERE id = ?""",
-            (current_iteration, total_cost, status, finished_at, loop_id),
-        )
-        self.conn.commit()
+        async with self._write_lock:
+            self.conn.execute(
+                """UPDATE ralph_loops
+                   SET current_iteration = ?, total_cost = ?, status = ?,
+                       finished_at = COALESCE(?, finished_at)
+                   WHERE id = ?""",
+                (current_iteration, total_cost, status, finished_at, loop_id),
+            )
+            self.conn.commit()
 
 
 class MessageRepository:
@@ -437,6 +471,7 @@ class MessageRepository:
 
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
+        self._write_lock = _shared_write_lock(conn)
 
     def _row_to_message(self, row: sqlite3.Row) -> SessionMessage:
         return SessionMessage(
@@ -448,20 +483,35 @@ class MessageRepository:
             created_at=row["created_at"],
         )
 
-    def add(
+    # Keep at most this many messages per session to prevent unbounded growth.
+    MAX_MESSAGES_PER_SESSION = 500
+
+    async def add(
         self,
         session_name: str,
         role: str,
         content: str,
         engine: str,
     ) -> None:
-        self.conn.execute(
-            """INSERT INTO session_messages
-               (session_name, role, content, engine, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (session_name, role, content, engine, datetime.now().isoformat()),
-        )
-        self.conn.commit()
+        async with self._write_lock:
+            self.conn.execute(
+                """INSERT INTO session_messages
+                   (session_name, role, content, engine, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_name, role, content, engine, datetime.now().isoformat()),
+            )
+            # Trim old messages beyond the retention limit.
+            self.conn.execute(
+                """DELETE FROM session_messages
+                   WHERE session_name = ? AND id NOT IN (
+                       SELECT id FROM session_messages
+                       WHERE session_name = ?
+                       ORDER BY id DESC
+                       LIMIT ?
+                   )""",
+                (session_name, session_name, self.MAX_MESSAGES_PER_SESSION),
+            )
+            self.conn.commit()
 
     def list_recent(self, session_name: str, limit: int = 40) -> list[SessionMessage]:
         rows = self.conn.execute(
@@ -485,7 +535,7 @@ def init_db() -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA foreign_keys=ON")
     except sqlite3.OperationalError:
         # Best-effort; some environments may reject specific pragmas.
@@ -498,7 +548,7 @@ def init_db() -> sqlite3.Connection:
             xmpp_password TEXT NOT NULL,
             claude_session_id TEXT,
             opencode_session_id TEXT,
-            active_engine TEXT DEFAULT 'opencode',
+            active_engine TEXT DEFAULT 'pi',
             opencode_agent TEXT DEFAULT 'bridge',
             model_id TEXT DEFAULT 'glm_vllm/glm-4.7-flash',
             reasoning_mode TEXT DEFAULT 'normal',
@@ -543,7 +593,7 @@ def init_db() -> sqlite3.Connection:
             status TEXT DEFAULT 'running',
             started_at TEXT NOT NULL,
             finished_at TEXT,
-            FOREIGN KEY (session_name) REFERENCES sessions(name)
+            FOREIGN KEY (session_name) REFERENCES sessions(name) ON DELETE CASCADE
         )
     """)
 
@@ -555,7 +605,7 @@ def init_db() -> sqlite3.Connection:
             content TEXT NOT NULL,
             engine TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            FOREIGN KEY (session_name) REFERENCES sessions(name)
+            FOREIGN KEY (session_name) REFERENCES sessions(name) ON DELETE CASCADE
         )
     """)
 
@@ -566,20 +616,27 @@ def init_db() -> sqlite3.Connection:
     # Migrations for existing databases
     migrations = [
         ("opencode_session_id", "TEXT"),
-        ("active_engine", "TEXT DEFAULT 'opencode'"),
+        ("active_engine", "TEXT DEFAULT 'pi'"),
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
-        ("model_id", f"TEXT DEFAULT '{OPENCODE_MODEL_DEFAULT}'"),
+        ("model_id", "TEXT DEFAULT 'glm_vllm/glm-4.7-flash'"),
         ("reasoning_mode", "TEXT DEFAULT 'normal'"),
         ("dispatcher_jid", "TEXT"),
         ("owner_jid", "TEXT"),
         ("room_jid", "TEXT"),
+        ("pi_session_id", "TEXT"),
     ]
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+    }
     for col_name, col_type in migrations:
+        if col_name in existing_cols:
+            continue
         try:
             conn.execute(f"ALTER TABLE sessions ADD COLUMN {col_name} {col_type}")
             conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sessions_owner_last_active ON sessions(owner_jid, last_active DESC)"
@@ -606,12 +663,18 @@ def init_db() -> sqlite3.Connection:
     ralph_migrations = [
         ("wait_seconds", "REAL DEFAULT 2.0"),
     ]
+    existing_ralph_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(ralph_loops)").fetchall()
+    }
     for col_name, col_type in ralph_migrations:
+        if col_name in existing_ralph_cols:
+            continue
         try:
             conn.execute(f"ALTER TABLE ralph_loops ADD COLUMN {col_name} {col_type}")
             conn.commit()
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
     conn.commit()
     return conn

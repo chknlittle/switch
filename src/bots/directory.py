@@ -82,11 +82,25 @@ class DirectoryBot(BaseXMPPBot):
     def on_disconnected(self, event):
         self.log.warning("Directory disconnected, reconnecting...")
         self.set_connected(False)
-        asyncio.ensure_future(self._reconnect())
+        if not getattr(self, "_reconnecting", False):
+            self._reconnecting = True
+            asyncio.ensure_future(self._reconnect())
 
     async def _reconnect(self):
-        await asyncio.sleep(5)
-        self.connect()
+        delay = 2
+        max_delay = 120
+        max_attempts = 50
+        for attempt in range(1, max_attempts + 1):
+            await asyncio.sleep(delay)
+            try:
+                self.connect()
+                self._reconnecting = False
+                return
+            except Exception:
+                self.log.warning("Directory reconnect attempt %d failed", attempt)
+                delay = min(delay * 2, max_delay)
+        self.log.error("Directory gave up reconnecting after %d attempts", max_attempts)
+        self._reconnecting = False
 
     # ---------------------------------------------------------------------
     # XEP-0030: disco#items
@@ -303,12 +317,13 @@ class DirectoryBot(BaseXMPPBot):
                 if name_val:
                     session_el.set("name", name_val)
             pubsub = cast(Any, self["xep_0060"])
-            pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
+            result = pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
                 self.pubsub_service_jid,
                 node,
                 id=str(uuid.uuid4()),
                 payload=payload,
             )
+            self._consume_pubsub_result(result, node)
         except (IqTimeout, IqError) as exc:
             self.log.warning("PubSub publish failed for %s: %s", node, exc)
         except Exception as exc:
@@ -321,12 +336,13 @@ class DirectoryBot(BaseXMPPBot):
             payload.set("event", "update")
             payload.set("ts", str(int(time.time())))
             pubsub = cast(Any, self["xep_0060"])
-            pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
+            result = pubsub.publish(  # pyright: ignore[reportAttributeAccessIssue]
                 self.pubsub_service_jid,
                 node,
                 id=str(uuid.uuid4()),
                 payload=payload,
             )
+            self._consume_pubsub_result(result, node)
         except IqTimeout:
             self.log.warning(
                 "PubSub publish timed out (node=%s service=%s)",
@@ -349,6 +365,22 @@ class DirectoryBot(BaseXMPPBot):
             )
         except Exception as exc:
             self.log.debug("Failed to publish pubsub update for %s: %s", node, exc)
+
+    def _consume_pubsub_result(self, result: object, node: str) -> None:
+        """If slixmpp returned a coroutine/Future, schedule it and log errors."""
+        if not (asyncio.iscoroutine(result) or isinstance(result, asyncio.Future)):
+            return
+        task = asyncio.ensure_future(result)
+
+        def _done(t: asyncio.Future) -> None:
+            try:
+                t.result()
+            except (IqTimeout, IqError) as exc:
+                self.log.warning("PubSub publish failed (node=%s): %s", node, exc)
+            except Exception:
+                self.log.debug("PubSub publish error for %s", node, exc_info=True)
+
+        task.add_done_callback(_done)
 
     def _ensure_pubsub_node(self, node: str) -> None:
         pubsub = cast(Any, self["xep_0060"])
