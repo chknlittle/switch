@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shlex
 from pathlib import Path
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     import sqlite3
 
     from src.manager import SessionManager
+    from src.voice import VoiceCallManager
 
 
 class DispatcherBot(BaseXMPPBot):
@@ -70,6 +72,14 @@ class DispatcherBot(BaseXMPPBot):
         self.add_event_handler("message", self.on_message)
         self.add_event_handler("disconnected", self.on_disconnected)
 
+        # Voice call support — transcribed speech creates a new session
+        self._voice: VoiceCallManager | None = None
+        if os.getenv("SWITCH_VOICE_ENABLED", "0").strip().lower() in {
+            "1", "true", "yes", "on",
+        }:
+            from src.voice import VoiceCallManager as _VCM
+            self._voice = _VCM(self, on_transcription=self._on_voice_transcription)
+
         self._commands: dict[str, Callable[[str, str], Coroutine]] = {
             "/list": self._cmd_list,
             "/kill": self._cmd_kill,
@@ -82,6 +92,12 @@ class DispatcherBot(BaseXMPPBot):
         }
 
     async def on_start(self, event):
+        if self._voice:
+            try:
+                self._voice.register_handlers()
+                await self._voice.update_caps()
+            except Exception:
+                self.log.warning("Failed to register voice handlers", exc_info=True)
         self.send_presence()
         await self.get_roster()
         self.log.info("Dispatcher connected")
@@ -109,6 +125,14 @@ class DispatcherBot(BaseXMPPBot):
                 delay = min(delay * 2, max_delay)
         self.log.error("Dispatcher gave up reconnecting after %d attempts", max_attempts)
         self._reconnecting = False
+
+    async def _on_voice_transcription(self, text: str) -> None:
+        """Handle transcribed voice — create a new session with it."""
+        owner = (self.xmpp_recipient or "").split("/", 1)[0]
+        if not owner:
+            self.log.warning("Voice transcription but no owner configured")
+            return
+        await self.create_session(text, reply_to=owner, owner_jid=owner)
 
     async def on_message(self, msg):
         recipient = str(msg["from"].bare) if msg["type"] in ("chat", "normal") else None

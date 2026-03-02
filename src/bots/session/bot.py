@@ -120,7 +120,7 @@ class SessionBot(BaseXMPPBot):
             "1", "true", "yes", "on",
         }:
             from src.voice import VoiceCallManager as _VCM
-            self._voice = _VCM(self, self.session)
+            self._voice = _VCM(self, session=self.session)
 
         self.register_plugin("xep_0045")
 
@@ -283,6 +283,15 @@ class SessionBot(BaseXMPPBot):
         await self.guard(self._on_start(event), context="session.on_start")
 
     async def _on_start(self, event):
+        # Register voice call handlers BEFORE presence so entity caps
+        # (XEP-0115) include Jingle features in the initial presence.
+        if self._voice:
+            try:
+                self._voice.register_handlers()
+                await self._voice.update_caps()
+            except Exception:
+                self.log.warning("Failed to register voice handlers", exc_info=True)
+
         self.send_presence()
         try:
             await asyncio.wait_for(self.get_roster(), timeout=15)
@@ -304,12 +313,6 @@ class SessionBot(BaseXMPPBot):
                 self.disconnect()
                 self.set_connected(False)
                 return
-        # Register voice call handlers if enabled.
-        if self._voice:
-            try:
-                self._voice.register_handlers()
-            except Exception:
-                self.log.warning("Failed to register voice handlers", exc_info=True)
 
         self.log.info("Connected")
         self.set_connected(True)

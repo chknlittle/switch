@@ -23,10 +23,11 @@ NS_JINGLE_RTP_AUDIO = "urn:xmpp:jingle:apps:rtp:audio"
 NS_JINGLE_ICE_UDP = "urn:xmpp:jingle:transports:ice-udp:1"
 NS_JINGLE_DTLS = "urn:xmpp:jingle:apps:dtls:0"
 NS_JINGLE_RTP_HDREXT = "urn:xmpp:jingle:apps:rtp:rtp-hdrext:0"
+NS_JINGLE_GROUPING = "urn:xmpp:jingle:apps:grouping:0"
 
 # Feature URNs that Conversations checks via disco#info before showing
 # the call button.  Register these on the bot's full JID.
-OICE_CALL_FEATURES = [
+VOICE_CALL_FEATURES = [
     NS_JINGLE,
     NS_JINGLE_RTP,
     NS_JINGLE_RTP_AUDIO,
@@ -39,7 +40,7 @@ OICE_CALL_FEATURES = [
 ]
 
 # Deduplicated feature list for disco registration
-VOICE_DISCO_FEATURES: list[str] = list(dict.fromkeys(OICE_CALL_FEATURES))
+VOICE_DISCO_FEATURES: list[str] = list(dict.fromkeys(VOICE_CALL_FEATURES))
 
 
 @dataclass
@@ -81,6 +82,10 @@ class JingleOffer:
 
     # Codecs — list of (payload_type, codec_name, clockrate, channels)
     codecs: list[tuple[str, str, str, str]] = field(default_factory=list)
+
+    # Group (BUNDLE) — semantics string + list of content names
+    group_semantics: str | None = None
+    group_contents: list[str] = field(default_factory=list)
 
 
 def parse_session_initiate(iq_stanza: Any) -> JingleOffer | None:
@@ -163,6 +168,18 @@ def parse_session_initiate(iq_stanza: Any) -> JingleOffer | None:
             dtls_fingerprint = (fp_el.text or "").strip()
             dtls_setup = fp_el.get("setup", "actpass")
 
+    # Parse group element (BUNDLE)
+    group_el = jingle_el.find(f"{{{NS_JINGLE_GROUPING}}}group")
+    group_semantics = None
+    group_contents: list[str] = []
+    if group_el is not None:
+        group_semantics = group_el.get("semantics", "BUNDLE")
+        for gc in group_el.findall(f"{{{NS_JINGLE_GROUPING}}}content"):
+            name = gc.get("name", "")
+            if name:
+                group_contents.append(name)
+        log.info("Parsed group: semantics=%s contents=%s", group_semantics, group_contents)
+
     return JingleOffer(
         sid=sid,
         initiator=initiator,
@@ -175,6 +192,8 @@ def parse_session_initiate(iq_stanza: Any) -> JingleOffer | None:
         dtls_fingerprint=dtls_fingerprint,
         dtls_setup=dtls_setup,
         codecs=codecs,
+        group_semantics=group_semantics,
+        group_contents=group_contents,
     )
 
 
@@ -260,6 +279,15 @@ def build_session_accept(
     jingle.set("sid", offer.sid)
     jingle.set("responder", offer.responder)
 
+    # Echo the group element (BUNDLE) from the offer — Conversations needs
+    # this to generate a=group:BUNDLE in the SDP it builds from our answer.
+    if offer.group_semantics and offer.group_contents:
+        group = ET.SubElement(jingle, f"{{{NS_JINGLE_GROUPING}}}group")
+        group.set("semantics", offer.group_semantics)
+        for cname in offer.group_contents:
+            gc = ET.SubElement(group, f"{{{NS_JINGLE_GROUPING}}}content")
+            gc.set("name", cname)
+
     content = ET.SubElement(jingle, f"{{{NS_JINGLE}}}content")
     content.set("creator", "initiator")
     content.set("name", offer.content_name)
@@ -276,6 +304,10 @@ def build_session_accept(
             pt.set("clockrate", clockrate)
         if channels and channels != "1":
             pt.set("channels", channels)
+
+    # rtcp-mux — required for WebRTC; without this Conversations won't
+    # add a=rtcp-mux to its SDP and media won't flow.
+    ET.SubElement(desc, f"{{{NS_JINGLE_RTP}}}rtcp-mux")
 
     # ICE-UDP transport
     transport = ET.SubElement(content, f"{{{NS_JINGLE_ICE_UDP}}}transport")

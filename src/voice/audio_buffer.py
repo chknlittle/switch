@@ -18,6 +18,7 @@ import struct
 import time
 from typing import Callable
 
+import av
 import numpy as np
 import webrtcvad
 
@@ -55,6 +56,8 @@ class AudioBuffer:
 
         # VAD — aggressiveness 2 (0=least aggressive, 3=most aggressive)
         self._vad = webrtcvad.Vad(2)
+        # PyAV resampler: lazily initialized on first frame
+        self._resampler: av.AudioResampler | None = None
 
         # Accumulation state
         self._buffer: list[bytes] = []  # 16kHz mono 16-bit PCM chunks
@@ -71,8 +74,17 @@ class AudioBuffer:
         try:
             pcm_16k = self._resample_frame(frame)
         except Exception:
-            log.debug("Failed to resample audio frame", exc_info=True)
+            log.warning("Failed to resample audio frame", exc_info=True)
             return
+
+        if not pcm_16k:
+            return
+
+        if not hasattr(self, '_frame_count'):
+            self._frame_count = 0
+        self._frame_count += 1
+        if self._frame_count <= 3 or self._frame_count % 100 == 0:
+            log.info("push_frame #%d: %d bytes pcm_16k", self._frame_count, len(pcm_16k))
 
         # Prepend any leftover from previous frame
         data = self._vad_accum + pcm_16k
@@ -89,7 +101,7 @@ class AudioBuffer:
             try:
                 is_speech = self._vad.is_speech(chunk, _TARGET_SAMPLE_RATE)
             except Exception:
-                pass
+                log.warning("VAD failed on chunk len=%d", len(chunk), exc_info=True)
 
             now = time.monotonic()
 
@@ -153,30 +165,19 @@ class AudioBuffer:
         self._speech_detected = False
         self._last_speech_time = 0.0
 
-    @staticmethod
-    def _resample_frame(frame) -> bytes:
+    def _resample_frame(self, frame) -> bytes:
         """Resample an aiortc AudioFrame to 16kHz mono 16-bit PCM.
 
-        aiortc typically delivers 48kHz stereo (2ch) Opus-decoded frames.
+        Uses PyAV's AudioResampler which correctly handles all input
+        formats/layouts (s16 interleaved, fltp planar, etc.).
         """
-        # frame.to_ndarray() returns shape (samples, channels) as int16
-        arr = frame.to_ndarray()
-
-        # Mono mix if stereo
-        if arr.ndim == 2 and arr.shape[1] > 1:
-            arr = arr.mean(axis=1).astype(np.int16)
-        elif arr.ndim == 2:
-            arr = arr[:, 0]
-
-        src_rate = frame.sample_rate
-        if src_rate != _TARGET_SAMPLE_RATE:
-            # Simple linear interpolation resampling
-            src_len = len(arr)
-            dst_len = int(src_len * _TARGET_SAMPLE_RATE / src_rate)
-            if dst_len == 0:
-                return b""
-            indices = np.linspace(0, src_len - 1, dst_len)
-            arr = np.interp(indices, np.arange(src_len), arr.astype(np.float64))
-            arr = arr.astype(np.int16)
-
-        return arr.tobytes()
+        if self._resampler is None:
+            self._resampler = av.AudioResampler(
+                format="s16", layout="mono", rate=_TARGET_SAMPLE_RATE,
+            )
+        out_frames = self._resampler.resample(frame)
+        parts = []
+        for f in out_frames:
+            arr = f.to_ndarray()
+            parts.append(arr.tobytes())
+        return b"".join(parts)

@@ -342,6 +342,8 @@ class BaseXMPPBot(ClientXMPP):
         self.register_plugin("xep_0199")  # Ping
         self.register_plugin("xep_0085")  # Chat State Notifications
         self.register_plugin("xep_0280")  # Message Carbons
+        self.register_plugin("xep_0030")  # Service Discovery
+        self.register_plugin("xep_0115")  # Entity Capabilities (caps in presence)
 
     def connect_to_server(self, server: str, port: int = 5222):
         """Connect with standard settings (unencrypted, no TLS)."""

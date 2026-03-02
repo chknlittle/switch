@@ -48,30 +48,32 @@ def voice_enabled() -> bool:
 
 
 class VoiceCallManager:
-    """Manages voice calls for a single SessionBot.
+    """Manages voice calls for an XMPP bot.
 
     Lifecycle:
-        1. Created in SessionBot.__init__ (if voice enabled)
+        1. Created in bot.__init__ (if voice enabled)
         2. register_handlers() called in on_start
         3. Incoming Jingle IQs routed here by the handler
-        4. Audio transcribed and enqueued into the session
+        4. Audio transcribed and delivered via on_transcription callback
         5. shutdown() called on bot teardown
     """
 
     def __init__(
         self,
-        bot: Any,  # SessionBot — avoid circular import
-        session: "SessionPort",
+        bot: Any,  # BaseXMPPBot — avoid circular import
+        on_transcription: Any = None,  # async callable(str) — receives transcribed text
+        session: "SessionPort | None" = None,
     ):
         self._bot = bot
         self._session = session
+        self._on_transcription = on_transcription
         self._active_calls: dict[str, RTCPeerConnection] = {}  # sid → pc
         self._audio_buffers: dict[str, AudioBuffer] = {}  # sid → buffer
         self._shutting_down = False
 
     def register_handlers(self) -> None:
         """Register Jingle IQ handler and disco features on the bot."""
-        from slixmpp.xmlstream import MatchXPath
+        from slixmpp.xmlstream.matcher import MatchXPath
         from slixmpp.xmlstream.handler import Callback
 
         # Register handler for all Jingle IQ stanzas
@@ -83,14 +85,15 @@ class VoiceCallManager:
             )
         )
 
-        # Register disco features so Conversations shows the call button.
-        # xep_0030 must be registered on the bot first.
-        try:
-            self._bot.register_plugin("xep_0030")
-        except Exception:
-            pass  # Already registered
-
+        # Register Jingle disco features so Conversations shows the call button.
+        # Use slixmpp's xep_0030 plugin — do NOT add a custom disco handler
+        # (it conflicts with slixmpp's built-in one).
         disco = self._bot["xep_0030"]
+
+        # disco#info MUST include at least one identity (XEP-0030 §4).
+        # Without this, Conversations may discard the response.
+        disco.add_identity(category="client", itype="bot", name="Switch")
+
         for feature in VOICE_DISCO_FEATURES:
             try:
                 disco.add_feature(feature)
@@ -98,6 +101,17 @@ class VoiceCallManager:
                 log.debug("Failed to add disco feature: %s", feature)
 
         log.info("Voice call handlers registered (%d disco features)", len(VOICE_DISCO_FEATURES))
+
+    async def update_caps(self) -> None:
+        """Compute entity caps hash and store it for presence broadcasting.
+
+        Must be awaited BEFORE send_presence() so the <c> element is included.
+        """
+        try:
+            await self._bot["xep_0115"].update_caps(broadcast=False)
+            log.info("Entity caps updated with Jingle features")
+        except Exception:
+            log.warning("Failed to update entity caps", exc_info=True)
 
     def _handle_jingle_iq(self, iq: Any) -> None:
         """Dispatch incoming Jingle IQs by action."""
@@ -171,11 +185,16 @@ class VoiceCallManager:
         audio_buf = AudioBuffer(on_segment)
         self._audio_buffers[sid] = audio_buf
 
-        # Accept the call via WebRTC
+        # Accept the call via WebRTC.
+        # Pass bot's XMPP credentials for TURN auth (ejabberd uses XMPP auth).
+        turn_user = str(self._bot.boundjid)
+        turn_pass = self._bot.password
         try:
             pc, jingle_info = await accept_call(
                 offer,
                 on_audio_frame=audio_buf.push_frame,
+                turn_user=turn_user,
+                turn_pass=turn_pass,
             )
         except Exception:
             log.exception("Failed to accept call (sid=%s)", sid)
@@ -188,6 +207,8 @@ class VoiceCallManager:
 
         # Send session-accept IQ
         accept_jingle = build_session_accept(offer, **jingle_info)
+        from slixmpp.xmlstream import tostring as xml_tostring
+        log.info("session-accept Jingle XML:\n%s", xml_tostring(accept_jingle, top_level=True))
         accept_iq = self._bot.make_iq_set(ito=str(iq["from"]))
         accept_iq.xml.append(accept_jingle)
         try:
@@ -197,7 +218,7 @@ class VoiceCallManager:
             await self._cleanup_call(sid)
             return
 
-        self._bot.send_reply("[Voice call started]")
+        self._bot.send_reply("[Voice call started]", recipient=getattr(self._bot, "xmpp_recipient", None))
         log.info("Voice call accepted (sid=%s)", sid)
 
     async def _on_transport_info(self, iq: Any) -> None:
@@ -232,15 +253,13 @@ class VoiceCallManager:
 
         log.info("Remote hangup (sid=%s)", sid)
         await self._cleanup_call(sid)
-        self._bot.send_reply("[Voice call ended]")
+        self._bot.send_reply("[Voice call ended]", recipient=getattr(self._bot, "xmpp_recipient", None))
 
     async def _transcribe_segment(
         self, sid: str, pcm: bytes, sample_rate: int
     ) -> None:
         """Transcribe an audio segment and enqueue the text into the session."""
         if self._shutting_down:
-            return
-        if sid not in self._active_calls:
             return
 
         from src.voice.transcriber import transcribe
@@ -255,13 +274,24 @@ class VoiceCallManager:
             return
 
         log.info("Voice transcription: %s", text[:100])
-        await self._session.enqueue(
-            text,
-            None,
-            trigger_response=True,
-            scheduled=False,
-            wait=False,
-        )
+        try:
+            self._bot.send_reply(
+                f"[Voice] {text}",
+                recipient=getattr(self._bot, "xmpp_recipient", None),
+            )
+        except Exception:
+            log.debug("Could not send [Voice] echo", exc_info=True)
+
+        if self._on_transcription:
+            await self._on_transcription(text)
+        elif self._session:
+            await self._session.enqueue(
+                text,
+                None,
+                trigger_response=True,
+                scheduled=False,
+                wait=False,
+            )
 
     def _send_jingle_terminate(
         self, to: Any, sid: str, reason: str = "success"

@@ -35,8 +35,36 @@ log = logging.getLogger("voice.media")
 _DEFAULT_STUN = "stun:stun.l.google.com:19302"
 
 
-def _stun_server() -> str:
-    return os.getenv("SWITCH_STUN_SERVER", _DEFAULT_STUN).strip() or _DEFAULT_STUN
+def _ice_servers(turn_user: str = "", turn_pass: str = "") -> list[RTCIceServer]:
+    """Build ICE server list from environment + optional credentials.
+
+    Env vars:
+        SWITCH_STUN_SERVER  — STUN URI  (default: Google public STUN)
+                              Set to "none" to disable (e.g. Tailscale direct routing)
+        SWITCH_TURN_SERVER  — TURN URI  (e.g. turn:example.com:3478)
+        SWITCH_TURN_USER    — TURN username  (overridden by turn_user param)
+        SWITCH_TURN_PASS    — TURN credential (overridden by turn_pass param)
+    """
+    servers: list[RTCIceServer] = []
+
+    stun = os.getenv("SWITCH_STUN_SERVER", _DEFAULT_STUN).strip()
+    if stun.lower() in ("none", "off", ""):
+        log.info("STUN disabled — using host candidates only")
+    else:
+        stun = stun or _DEFAULT_STUN
+        servers.append(RTCIceServer(urls=[stun]))
+
+    turn = os.getenv("SWITCH_TURN_SERVER", "").strip()
+    if turn and turn.lower() not in ("none", "off"):
+        user = turn_user or os.getenv("SWITCH_TURN_USER", "").strip()
+        cred = turn_pass or os.getenv("SWITCH_TURN_PASS", "").strip()
+        servers.append(RTCIceServer(urls=[turn], username=user, credential=cred))
+        log.info("TURN server configured: %s (user=%s)", turn, user or "<none>")
+
+    if not servers:
+        log.info("No ICE servers — host candidates only (direct routing)")
+
+    return servers
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +159,11 @@ def _parse_sdp_answer_for_jingle(
         elif line.startswith("a=fingerprint:"):
             parts = line.split(":", 1)[1].split(None, 1)
             if len(parts) == 2:
-                dtls_hash, dtls_fingerprint = parts
+                h, fp = parts
+                # Prefer sha-256 (what Conversations uses); only take
+                # other hashes if sha-256 isn't available.
+                if h == "sha-256" or not dtls_fingerprint:
+                    dtls_hash, dtls_fingerprint = h, fp
         elif line.startswith("a=setup:"):
             dtls_setup = line.split(":", 1)[1]
         elif line.startswith("a=candidate:"):
@@ -215,10 +247,12 @@ AudioFrameCallback = Callable[[AudioFrame], None]
 async def accept_call(
     offer: JingleOffer,
     on_audio_frame: AudioFrameCallback,
+    turn_user: str = "",
+    turn_pass: str = "",
 ) -> tuple[RTCPeerConnection, dict[str, Any]]:
     """Accept an incoming Jingle voice call.
 
-    1. Creates an RTCPeerConnection with STUN config
+    1. Creates an RTCPeerConnection with STUN/TURN config
     2. Sets the remote SDP offer
     3. Creates and sets a local answer
     4. Hooks up the audio track to deliver frames via callback
@@ -227,9 +261,20 @@ async def accept_call(
 
     The caller is responsible for sending the Jingle session-accept IQ.
     """
-    stun = _stun_server()
-    config = RTCConfiguration(iceServers=[RTCIceServer(urls=[stun])])
+    # Enable debug logging for aiortc internals during the call
+    for _mod in ("aiortc", "aioice", "aiortc.rtcdtlstransport", "aiortc.rtcpeerconnection"):
+        logging.getLogger(_mod).setLevel(logging.DEBUG)
+
+    config = RTCConfiguration(iceServers=_ice_servers(turn_user, turn_pass))
     pc = RTCPeerConnection(configuration=config)
+
+    @pc.on("connectionstatechange")
+    def on_connstate():
+        log.info("PeerConnection state: %s", pc.connectionState)
+
+    @pc.on("iceconnectionstatechange")
+    def on_icestate():
+        log.info("ICE connection state: %s", pc.iceConnectionState)
 
     # Hook audio track
     @pc.on("track")
@@ -239,22 +284,40 @@ async def accept_call(
         log.info("Audio track received: %s", track.id)
 
         async def _consume():
+            from aiortc.mediastreams import MediaStreamError
+            frame_count = 0
             try:
                 while True:
                     frame = await track.recv()
-                    on_audio_frame(frame)
+                    frame_count += 1
+                    if frame_count <= 3 or frame_count % 200 == 0:
+                        log.info("_consume frame #%d: samples=%s rate=%s format=%s",
+                                 frame_count, frame.samples, frame.sample_rate, frame.format.name)
+                    try:
+                        on_audio_frame(frame)
+                    except Exception:
+                        log.exception("Error in audio frame callback")
+            except MediaStreamError:
+                log.info("Audio track ended normally (received %d frames)", frame_count)
             except Exception:
-                log.debug("Audio track ended")
+                log.exception("Audio consume loop crashed after %d frames", frame_count)
 
         import asyncio
         asyncio.ensure_future(_consume())
 
     # Set remote offer
     sdp_offer = _jingle_offer_to_sdp(offer)
-    log.debug("Generated SDP offer:\n%s", sdp_offer)
+    log.info("Generated SDP offer:\n%s", sdp_offer)
     await pc.setRemoteDescription(
         RTCSessionDescription(sdp=sdp_offer, type="offer")
     )
+
+    # Add a silent outbound audio track so the SDP answer says "sendrecv"
+    # instead of "recvonly". Conversations won't send RTP until it sees
+    # media flowing from us.
+    from aiortc.mediastreams import AudioStreamTrack
+    silence_track = AudioStreamTrack()
+    pc.addTrack(silence_track)
 
     # Add remote ICE candidates
     for c in offer.candidates:
@@ -268,7 +331,7 @@ async def accept_call(
     await pc.setLocalDescription(answer)
 
     local_sdp = pc.localDescription.sdp
-    log.debug("Local SDP answer:\n%s", local_sdp)
+    log.info("Local SDP answer:\n%s", local_sdp)
 
     # Parse our answer SDP back into Jingle fields
     (
