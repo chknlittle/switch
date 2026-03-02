@@ -282,6 +282,10 @@ class VoiceCallManager:
         except Exception:
             log.debug("Could not send [Voice] echo", exc_info=True)
 
+        # Voice commands: short utterances that match slash commands
+        if await self._try_voice_command(text):
+            return
+
         if self._on_transcription:
             await self._on_transcription(text)
         elif self._session:
@@ -292,6 +296,42 @@ class VoiceCallManager:
                 scheduled=False,
                 wait=False,
             )
+
+    # Voice commands — short spoken phrases mapped to slash commands.
+    _VOICE_COMMANDS: dict[str, str] = {
+        "cancel": "/cancel",
+        "stop": "/cancel",
+        "pause": "/cancel",
+        "retry": "/retry",
+        "recap": "/recap",
+    }
+
+    async def _try_voice_command(self, text: str) -> bool:
+        """Check if transcribed text is a voice command. Returns True if handled."""
+        # Only match short utterances (≤4 words) to avoid false positives
+        words = text.strip().lower().rstrip(".!?,").split()
+        if not words or len(words) > 4:
+            return False
+
+        cmd_key = words[0]
+        slash_cmd = self._VOICE_COMMANDS.get(cmd_key)
+        if not slash_cmd:
+            return False
+
+        log.info("Voice command detected: %r → %s", text, slash_cmd)
+        # Route through the bot's command handler if it has one
+        commands = getattr(self._bot, "commands", None)
+        if commands and hasattr(commands, "handle"):
+            await commands.handle(slash_cmd)
+            return True
+
+        # Fallback: direct cancel for bots without CommandHandler
+        cancel = getattr(self._bot, "cancel_operations", None)
+        if cancel and slash_cmd == "/cancel":
+            cancel(notify=True)
+            return True
+
+        return False
 
     def _send_jingle_terminate(
         self, to: Any, sid: str, reason: str = "success"
