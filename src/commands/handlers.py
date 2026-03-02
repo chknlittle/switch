@@ -181,8 +181,8 @@ class CommandHandler:
             return True
 
         engine = (session.active_engine or "").strip().lower()
-        if engine != "pi":
-            self.bot.send_reply("/thinking only applies to Pi sessions.")
+        if engine not in {"pi", "opencode"}:
+            self.bot.send_reply("/thinking only applies to Pi/OpenCode sessions.")
             return True
 
         await self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])

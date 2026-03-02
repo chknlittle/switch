@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, cast
 
 from src.attachments import Attachment
 from src.runners import Question, Runner
@@ -1409,8 +1409,16 @@ class SessionRuntime:
     def _parse_question_answer(
         self, question: Question, answer: object
     ) -> list[list[str]]:
-        if isinstance(answer, list):
-            return answer  # type: ignore[return-value]
+        if (
+            isinstance(answer, list)
+            and all(isinstance(item, list) for item in answer)
+            and all(
+                isinstance(choice, str)
+                for item in answer
+                for choice in (item if isinstance(item, list) else [])
+            )
+        ):
+            return cast(list[list[str]], answer)
 
         text = str(answer or "").strip()
         qs = question.questions or []
