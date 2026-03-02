@@ -284,6 +284,7 @@ class OpenCodeClient:
                 continue
             buf.extend(chunk)
             if len(buf) > max_buf:
+                original_len = len(buf)
                 # Try to shed one or more whole events first.
                 dropped = 0
                 while len(buf) > max_buf:
@@ -296,7 +297,8 @@ class OpenCodeClient:
                     del buf[:consumed]
                     dropped += 1
                 log.warning(
-                    "OpenCode SSE buffer exceeded limit (%d bytes); dropped %d oversized/old event(s)",
+                    "OpenCode SSE buffer exceeded limit (%d -> %d bytes); dropped %d oversized/old event(s)",
+                    original_len,
                     len(buf),
                     dropped,
                 )
@@ -322,10 +324,11 @@ class OpenCodeClient:
                     continue
 
                 payload = "\n".join(data_lines)
-                if len(payload.encode("utf-8", errors="ignore")) > max_event:
+                payload_size = len(payload.encode("utf-8", errors="replace"))
+                if payload_size > max_event:
                     log.warning(
                         "Dropping oversized OpenCode SSE event (%d bytes)",
-                        len(payload),
+                        payload_size,
                     )
                     continue
                 try:
