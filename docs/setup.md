@@ -103,6 +103,8 @@ OC_GLM_ZEN_JID=oc-glm-zen@your.xmpp.server
 OC_GLM_ZEN_PASSWORD=
 OC_GPT_OR_JID=oc-gpt-or@your.xmpp.server
 OC_GPT_OR_PASSWORD=
+OC_GEMINI_JID=oc-gemini@your.xmpp.server
+OC_GEMINI_PASSWORD=
 OC_KIMI_CODING_JID=oc-kimi-coding@your.xmpp.server
 OC_KIMI_CODING_PASSWORD=
 ```

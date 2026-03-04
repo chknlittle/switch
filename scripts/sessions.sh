@@ -44,7 +44,7 @@ case "${1:-list}" in
         # Prefer in-bridge kill via dispatcher so the in-memory bot winds down
         # and doesn't immediately reconnect.
         DISPATCHER=${SWITCH_DEFAULT_DISPATCHER:-oc-gpt}
-        if python3 scripts/spawn-session.py --dispatcher "$DISPATCHER" "/kill $NAME" >/dev/null 2>&1; then
+        if scripts/spawn-session --dispatcher "$DISPATCHER" "/kill $NAME" >/dev/null 2>&1; then
             echo "Requested kill via dispatcher ($DISPATCHER): $NAME"
             exit 0
         fi

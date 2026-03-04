@@ -58,6 +58,18 @@ async def start_attachments_server(
 
     app = web.Application()
 
+    async def root(_: web.Request) -> web.StreamResponse:
+        return web.Response(
+            text=(
+                "switch attachments server\n"
+                "use /attachments/{token}/{session}/{path}\n"
+            ),
+            content_type="text/plain",
+        )
+
+    async def health(_: web.Request) -> web.StreamResponse:
+        return web.json_response({"ok": True, "service": "attachments"})
+
     async def handle(request: web.Request) -> web.StreamResponse:
         req_token = request.match_info.get("token", "")
         if req_token != token:
@@ -74,6 +86,8 @@ async def start_attachments_server(
         return web.FileResponse(path)
 
     # Allow nested file paths so attachments can be grouped in subfolders.
+    app.router.add_get("/", root)
+    app.router.add_get("/healthz", health)
     app.router.add_get("/attachments/{token}/{session}/{path:.*}", handle)
 
     runner = web.AppRunner(app)

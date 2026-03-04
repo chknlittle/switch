@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if command -v uv >/dev/null 2>&1; then
+    exec uv run python "$REPO_ROOT/scripts/spawn-session.py" "$@"
+fi
+
+if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    exec "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/scripts/spawn-session.py" "$@"
+fi
+
+echo "Error: no runnable Python env found for Switch."
+echo "Install uv (recommended), or run: python3 -m venv .venv && .venv/bin/pip install -e ."
+exit 1

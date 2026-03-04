@@ -82,8 +82,9 @@ class OpenCodeTransport:
         event_queue: asyncio.Queue[dict],
     ) -> tuple[asyncio.Task, asyncio.Task]:
         sse_task = asyncio.create_task(
-            self._client.stream_events(
-                session, event_queue, should_stop=lambda: self._cancelled
+            self._stream_events_safe(
+                session=session,
+                event_queue=event_queue,
             )
         )
         message_task = asyncio.create_task(
@@ -98,6 +99,32 @@ class OpenCodeTransport:
         )
         return sse_task, message_task
 
+    async def _stream_events_safe(
+        self,
+        *,
+        session: aiohttp.ClientSession,
+        event_queue: asyncio.Queue[dict],
+    ) -> None:
+        """Best-effort SSE consumer.
+
+        Streaming failures should not kill the whole run because we can still
+        finalize via message response + message polling.
+        """
+        try:
+            await self._client.stream_events(
+                session,
+                event_queue,
+                should_stop=lambda: self._cancelled,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning(
+                "OpenCode SSE stream unavailable; continuing without live stream: %s: %s",
+                type(e).__name__,
+                e,
+            )
+
     async def finalize(
         self,
         *,
@@ -111,6 +138,10 @@ class OpenCodeTransport:
         if isinstance(response, dict):
             processor.process_message_response(response, state)
             state.saw_result = True
+            if not state.saw_error and not state.text:
+                polled = await self._client.poll_assistant_text(session, session_id)
+                if polled and isinstance(polled, str):
+                    state.text = polled
             return processor.make_result(state)
 
         if not state.saw_result and not state.saw_error:
@@ -142,6 +173,10 @@ class OpenCodeTransport:
                 await sse_task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                # Never fail the whole run because SSE teardown surfaced an
+                # exception (we can still return POST/poll results).
+                log.debug("OpenCode SSE task ended during cleanup: %s", e)
 
         if message_task:
             if not message_task.done():

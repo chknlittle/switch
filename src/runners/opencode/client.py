@@ -260,7 +260,22 @@ class OpenCodeClient:
         # Avoid aiohttp's line-based iteration (`readline()`), which can raise
         # ValueError("Chunk too big") when a single SSE line exceeds the stream
         # reader limit. Instead, read raw chunks and split events on blank lines.
-        max_buf = int(os.getenv("OPENCODE_SSE_MAX_BUFFER_BYTES", str(16 * 1024 * 1024)))
+        def _int_env(name: str, default: int) -> int:
+            raw = os.getenv(name, str(default))
+            try:
+                value = int(raw)
+            except ValueError:
+                log.warning("Invalid %s=%r; using %d", name, raw, default)
+                return default
+            if value <= 0:
+                log.warning("Non-positive %s=%r; using %d", name, raw, default)
+                return default
+            return value
+
+        max_buf = _int_env("OPENCODE_SSE_MAX_BUFFER_BYTES", 16 * 1024 * 1024)
+        # When an individual event (or a delimiter-less stream chunk) grows too
+        # large, drop it instead of crashing the whole run.
+        max_event = _int_env("OPENCODE_SSE_MAX_EVENT_BYTES", 8 * 1024 * 1024)
 
         buf = bytearray()
 
@@ -281,7 +296,24 @@ class OpenCodeClient:
                 continue
             buf.extend(chunk)
             if len(buf) > max_buf:
-                raise ValueError(f"SSE buffer too big ({len(buf)} bytes)")
+                original_len = len(buf)
+                # Try to shed one or more whole events first.
+                dropped = 0
+                while len(buf) > max_buf:
+                    event_bytes, consumed = _split_event(buf)
+                    if event_bytes is None:
+                        # No complete event boundary yet; keep a small tail and continue.
+                        keep = min(len(buf), min(max(max_event, 256 * 1024), max_buf))
+                        del buf[:-keep]
+                        break
+                    del buf[:consumed]
+                    dropped += 1
+                log.warning(
+                    "OpenCode SSE buffer exceeded limit (%d -> %d bytes); dropped %d oversized/old event(s)",
+                    original_len,
+                    len(buf),
+                    dropped,
+                )
 
             while True:
                 event_bytes, consumed = _split_event(buf)
@@ -304,14 +336,19 @@ class OpenCodeClient:
                     continue
 
                 payload = "\n".join(data_lines)
+                payload_size = len(payload.encode("utf-8", errors="replace"))
+                if payload_size > max_event:
+                    log.warning(
+                        "Dropping oversized OpenCode SSE event (%d bytes)",
+                        payload_size,
+                    )
+                    continue
                 try:
                     event = json.loads(payload)
                 except json.JSONDecodeError as e:
-                    preview = payload.strip().replace("\n", " ")[:2000]
-                    raise OpenCodeProtocolError(
-                        "Invalid JSON in SSE data field",
-                        payload_preview=preview,
-                    ) from e
+                    preview = payload.strip().replace("\n", " ")[:500]
+                    log.warning("Skipping invalid OpenCode SSE JSON payload: %s", preview)
+                    continue
                 if isinstance(event, dict):
                     await queue.put(event)
 

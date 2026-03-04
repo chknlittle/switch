@@ -35,13 +35,22 @@
     "label": "GPT 5.2"
   },
   {
-    "name": "oc",
-    "jid": "oc@100.119.143.40",
+    "name": "qwen",
+    "jid": "qwen@100.119.143.40",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
-    "agent": "bridge",
-    "model_id": "glm_vllm/glm-4.7-flash",
-    "label": "GLM 4.7 Heretic"
+    "agent": "bridge-qwen",
+    "model_id": "glm_vllm/qwen3.5-35b-a3b-awq4",
+    "label": "Qwen3.5 35B A3B AWQ"
+  },
+  {
+    "name": "qwen-spark",
+    "jid": "qwen-spark@100.119.143.40",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "opencode",
+    "agent": "bridge-qwen-spark",
+    "model_id": "spark_llama/qwen3.5-122b-a10b-mxfp4-moe",
+    "label": "Qwen3.5 122B Spark MXFP4"
   },
   {
     "name": "oc-glm-zen",
@@ -62,6 +71,15 @@
     "label": "GPT 5.2 OR"
   },
   {
+    "name": "oc-gemini",
+    "jid": "oc-gemini@100.119.143.40",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "opencode",
+    "agent": "bridge-gemini",
+    "model_id": "opencode/gemini-3.1-pro",
+    "label": "Gemini 3.1 Pro"
+  },
+  {
     "name": "oc-kimi-coding",
     "jid": "oc-kimi-coding@100.119.143.40",
     "password_env": "XMPP_PASSWORD",
@@ -69,5 +87,23 @@
     "agent": "bridge-kimi-coding",
     "model_id": "kimi-for-coding/kimi-k2.5",
     "label": "Kimi K2.5 Coding"
+  },
+  {
+    "name": "heretic",
+    "jid": "heretic@100.119.143.40",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "opencode",
+    "agent": "bridge-heretic",
+    "model_id": "heretic_local/qwen35-27b-t95",
+    "label": "Heretic Qwen3.5 27B T95"
+  },
+  {
+    "name": "epstein",
+    "jid": "epstein@100.119.143.40",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "opencode",
+    "agent": "bridge-epstein",
+    "model_id": "alphakek-epsteinLM-synth-2602-ckpt4",
+    "label": "EpsteinLM 8B FP16"
   }
 ]
