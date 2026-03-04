@@ -89,6 +89,15 @@
     "label": "Kimi K2.5 Coding"
   },
   {
+    "name": "heretic",
+    "jid": "heretic@100.119.143.40",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "opencode",
+    "agent": "bridge-heretic",
+    "model_id": "heretic_local/qwen35-27b-t95",
+    "label": "Heretic Qwen3.5 27B T95"
+  },
+  {
     "name": "epstein",
     "jid": "epstein@100.119.143.40",
     "password_env": "XMPP_PASSWORD",

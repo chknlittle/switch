@@ -351,9 +351,9 @@ class BaseXMPPBot(ClientXMPP):
         self.enable_starttls = False
         self.enable_direct_tls = False
         self.enable_plaintext = True
-        # slixmpp.ClientXMPP.connect expects a single address tuple.
-        # TLS behavior is governed by the enable_* flags above.
-        self.connect((server, port))  # type: ignore[arg-type]
+        # slixmpp ClientXMPP.connect(host, port) requires separate args.
+        # Passing a tuple is ignored in newer versions and falls back to JID domain.
+        self.connect(server, port)
 
     def set_connected(self, connected: bool) -> None:
         if connected:
