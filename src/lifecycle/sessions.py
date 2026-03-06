@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Protocol, Callable
 
 from src.helpers import (
@@ -167,7 +168,13 @@ async def create_session(
             name,
             getattr(bot, "startup_error", "unknown error"),
         )
-        await _rollback_failed_create(manager, name, jid, dispatcher_jid=dispatcher_jid)
+        await _rollback_failed_create(
+            manager,
+            name,
+            jid,
+            dispatcher_jid=dispatcher_jid,
+            session_work_dir=session_work_dir,
+        )
         return None
 
     preview = (message or "").strip()[:50]
@@ -206,6 +213,7 @@ async def _rollback_failed_create(
     jid: str,
     *,
     dispatcher_jid: str | None,
+    session_work_dir: Path | None = None,
 ) -> None:
     bot = manager.session_bots.pop(name, None)
     if bot:
@@ -234,6 +242,18 @@ async def _rollback_failed_create(
         await manager.sessions.delete(name)
     except Exception:
         _log.warning("Failed to delete DB row during rollback for %s", name, exc_info=True)
+
+    if session_work_dir is not None:
+        try:
+            shutil.rmtree(session_work_dir, ignore_errors=False)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            _log.warning(
+                "Failed to remove working directory during rollback for %s",
+                name,
+                exc_info=True,
+            )
 
     try:
         manager.notify_directory_sessions_changed(dispatcher_jid=dispatcher_jid)

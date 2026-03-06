@@ -861,6 +861,9 @@ class SessionBot(BaseXMPPBot):
             self._send_attachment_meta(attachments)
 
         if meta_type == "question-reply":
+            if trusted_peer:
+                self.log.warning("Ignoring question reply from trusted peer session: %s", sender)
+                return
             request_id = (meta_attrs or {}).get("request_id")
             answer_obj: object | None = None
             if isinstance(meta_payload, dict):
@@ -884,6 +887,9 @@ class SessionBot(BaseXMPPBot):
         self.log.info(f"Message{'[scheduled]' if is_scheduled else ''}: {body[:50]}...")
 
         # Commands only from user
+        if trusted_peer and body.startswith("/"):
+            self.log.warning("Ignoring slash command from trusted peer session: %s", sender)
+            return
         if not is_scheduled and await self.commands.handle(body):
             return
 
