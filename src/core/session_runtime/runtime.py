@@ -1064,43 +1064,52 @@ class SessionRuntime:
         accumulated = ""
         last_progress_at = 0
 
-        async for event_type, content in self.runner.run(prompt, session_id):
-            if self.shutting_down:
-                return
+        try:
+            async for event_type, content in self.runner.run(prompt, session_id):
+                if self.shutting_down:
+                    return
 
-            if event_type == "session_id" and isinstance(content, str) and content:
-                if not ephemeral:
-                    await self._save_session_id(engine, content)
-            elif event_type == "text" and isinstance(content, str):
-                if accumulate_text:
-                    accumulated += content
-                    response_parts = [accumulated]
-                else:
-                    response_parts = [content]
-            elif event_type == "tool" and isinstance(content, str):
-                tool_summaries.append(content)
-                await self._emit_tool_progress(
-                    content, tool_summaries, last_progress_at
-                )
-                last_progress_at = self._updated_progress_at(
-                    tool_summaries, last_progress_at, content
-                )
-            elif event_type == "tool_result" and isinstance(content, str):
-                await self._emit(
-                    OutboundMessage(
-                        f"... {content}",
-                        meta_type="tool-result",
-                        meta_tool=self._infer_meta_tool_from_summary(content),
+                if event_type == "session_id" and isinstance(content, str) and content:
+                    if not ephemeral:
+                        await self._save_session_id(engine, content)
+                elif event_type == "text" and isinstance(content, str):
+                    if accumulate_text:
+                        accumulated += content
+                        response_parts = [accumulated]
+                    else:
+                        response_parts = [content]
+                elif event_type == "tool" and isinstance(content, str):
+                    tool_summaries.append(content)
+                    await self._emit_tool_progress(
+                        content, tool_summaries, last_progress_at
                     )
-                )
-            elif event_type == "result":
-                await self._send_result(
-                    tool_summaries, response_parts, content, engine=label
-                )
-            elif event_type == "error":
-                await self._emit(OutboundMessage(f"Error: {content}"))
-            elif event_type == "cancelled":
-                await self._emit(OutboundMessage("Cancelled."))
+                    last_progress_at = self._updated_progress_at(
+                        tool_summaries, last_progress_at, content
+                    )
+                elif event_type == "tool_result" and isinstance(content, str):
+                    await self._emit(
+                        OutboundMessage(
+                            f"... {content}",
+                            meta_type="tool-result",
+                            meta_tool=self._infer_meta_tool_from_summary(content),
+                        )
+                    )
+                elif event_type == "result":
+                    await self._send_result(
+                        tool_summaries, response_parts, content, engine=label
+                    )
+                elif event_type == "error":
+                    await self._emit(OutboundMessage(f"Error: {content}"))
+                elif event_type == "cancelled":
+                    await self._emit(OutboundMessage("Cancelled."))
+        finally:
+            runner_ref = self.runner
+            self.runner = None
+            if runner_ref and hasattr(runner_ref, "cleanup"):
+                try:
+                    await runner_ref.cleanup()
+                except Exception:
+                    log.warning("Runner cleanup failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Tool progress helpers

@@ -54,8 +54,9 @@ class VoiceCallManager:
         1. Created in bot.__init__ (if voice enabled)
         2. register_handlers() called in on_start
         3. Incoming Jingle IQs routed here by the handler
-        4. Audio transcribed and delivered via on_transcription callback
-        5. shutdown() called on bot teardown
+        4. Audio transcribed in real-time, text buffered until call ends
+        5. Full transcription sent when call terminates
+        6. shutdown() called on bot teardown
     """
 
     def __init__(
@@ -69,6 +70,8 @@ class VoiceCallManager:
         self._on_transcription = on_transcription
         self._active_calls: dict[str, RTCPeerConnection] = {}  # sid → pc
         self._audio_buffers: dict[str, AudioBuffer] = {}  # sid → buffer
+        self._transcription_buffers: dict[str, list[str]] = {}  # sid → accumulated text
+        self._transcription_tasks: dict[str, set[asyncio.Task]] = {}  # sid → in-flight tasks
         self._shutting_down = False
 
     def register_handlers(self) -> None:
@@ -178,9 +181,15 @@ class VoiceCallManager:
 
         # Set up audio buffer with transcription callback
         sid = offer.sid
+        self._transcription_buffers[sid] = []  # Initialize text buffer
+        self._transcription_tasks[sid] = set()  # Track in-flight transcriptions
 
         def on_segment(pcm: bytes, sample_rate: int) -> None:
-            asyncio.ensure_future(self._transcribe_segment(sid, pcm, sample_rate))
+            task = asyncio.ensure_future(self._transcribe_segment(sid, pcm, sample_rate))
+            tasks = self._transcription_tasks.get(sid)
+            if tasks is not None:
+                tasks.add(task)
+                task.add_done_callback(tasks.discard)
 
         audio_buf = AudioBuffer(on_segment)
         self._audio_buffers[sid] = audio_buf
@@ -258,7 +267,7 @@ class VoiceCallManager:
     async def _transcribe_segment(
         self, sid: str, pcm: bytes, sample_rate: int
     ) -> None:
-        """Transcribe an audio segment and enqueue the text into the session."""
+        """Transcribe an audio segment and accumulate text until call ends."""
         if self._shutting_down:
             return
 
@@ -273,7 +282,9 @@ class VoiceCallManager:
         if not text:
             return
 
-        log.info("Voice transcription: %s", text[:100])
+        log.info("Voice transcription (buffered): %s", text[:100])
+
+        # Echo so user sees what's being heard
         try:
             self._bot.send_reply(
                 f"[Voice] {text}",
@@ -286,16 +297,11 @@ class VoiceCallManager:
         if await self._try_voice_command(text):
             return
 
-        if self._on_transcription:
-            await self._on_transcription(text)
-        elif self._session:
-            await self._session.enqueue(
-                text,
-                None,
-                trigger_response=True,
-                scheduled=False,
-                wait=False,
-            )
+        # Buffer text for delivery when call ends
+        if sid in self._transcription_buffers:
+            self._transcription_buffers[sid].append(text)
+        else:
+            log.warning("No transcription buffer for sid=%s", sid)
 
     # Voice commands — short spoken phrases mapped to slash commands.
     _VOICE_COMMANDS: dict[str, str] = {
@@ -333,6 +339,27 @@ class VoiceCallManager:
 
         return False
 
+    async def _send_transcription(self, sid: str) -> None:
+        """Send accumulated transcription when call ends."""
+        texts = self._transcription_buffers.pop(sid, [])
+        if not texts:
+            log.debug("No transcription to send for sid=%s", sid)
+            return
+
+        full_text = " ".join(texts)
+        log.info("Sending voice transcription: %s", full_text[:200])
+
+        if self._on_transcription:
+            await self._on_transcription(full_text)
+        elif self._session:
+            await self._session.enqueue(
+                full_text,
+                None,
+                trigger_response=True,
+                scheduled=False,
+                wait=False,
+            )
+
     def _send_jingle_terminate(
         self, to: Any, sid: str, reason: str = "success"
     ) -> None:
@@ -347,13 +374,24 @@ class VoiceCallManager:
 
     async def _cleanup_call(self, sid: str) -> None:
         """Clean up a single call's resources."""
-        # Flush remaining audio
+        # Flush remaining audio (may trigger more transcription)
         buf = self._audio_buffers.pop(sid, None)
         if buf:
             try:
                 buf.flush_remaining()
             except Exception:
                 log.debug("Error flushing audio buffer", exc_info=True)
+
+        # Wait for all in-flight transcription tasks to finish
+        pending = self._transcription_tasks.pop(sid, set())
+        if pending:
+            results = await asyncio.gather(*pending, return_exceptions=True)
+            for r in results:
+                if isinstance(r, Exception):
+                    log.warning("Transcription task failed during cleanup: %s", r)
+
+        # Send accumulated transcription
+        await self._send_transcription(sid)
 
         pc = self._active_calls.pop(sid, None)
         if pc:

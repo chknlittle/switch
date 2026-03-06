@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -73,6 +72,18 @@ class PiRunner(BaseRunner):
             "NEVER run a server in the foreground — it will block and hang. "
             "Stay focused on the task — do not explore the filesystem or read unrelated files."
         )
+        # File-protection rules — ALWAYS appended, cannot be overridden.
+        _FILE_SAFETY = (
+            "\n\n## CRITICAL FILE PROTECTION RULES\n"
+            "You MUST NEVER create, edit, modify, move, rename, or delete ANY of the following:\n"
+            "- Any `.py` file under `~/switch/` (the Switch codebase)\n"
+            "- `~/switch/AGENTS.md`, `~/switch/CLAUDE.md`, `~/switch/.env`\n"
+            "- `~/switch/sessions.db` or any `.db` file under `~/switch/`\n"
+            "- `~/switch/pyproject.toml`, `~/switch/uv.lock`\n"
+            "- Any file under `~/switch/src/`, `~/switch/scripts/`, `~/switch/tests/`\n"
+            "These are mission-critical files. If a task requires modifying them, "
+            "STOP and tell the user you cannot do that. No exceptions."
+        )
         if self._config.system_prompt is not None:
             sys_prompt = self._config.system_prompt
         else:
@@ -88,7 +99,10 @@ class PiRunner(BaseRunner):
             else:
                 sys_prompt = _DEFAULT_SYSTEM_PROMPT
         if sys_prompt:
+            sys_prompt += _FILE_SAFETY
             cmd.extend(["--append-system-prompt", sys_prompt])
+        else:
+            cmd.extend(["--append-system-prompt", _FILE_SAFETY.strip()])
 
         return cmd
 
@@ -111,14 +125,88 @@ class PiRunner(BaseRunner):
             pass
 
     async def _send(self, msg: dict) -> None:
-        if not self._process or not self._process.stdin:
-            return
+        proc = self._process
+        if not proc or not proc.stdin:
+            raise RuntimeError("Pi process not running (no stdin)")
+        if proc.stdin.is_closing():
+            raise RuntimeError("Pi process stdin is closing")
         line = json.dumps(msg, separators=(",", ":")) + "\n"
-        self._process.stdin.write(line.encode())
-        await self._process.stdin.drain()
+        try:
+            proc.stdin.write(line.encode())
+            await proc.stdin.drain()
+        except (ConnectionResetError, BrokenPipeError) as e:
+            raise RuntimeError(f"Pi process died unexpectedly: {e}") from e
+
+    def _is_alive(self) -> bool:
+        """Check if the subprocess is still running."""
+        return self._process is not None and self._process.returncode is None
+
+    async def _handle_extension_ui(self, event: dict) -> None:
+        """Auto-respond to extension UI requests to prevent Pi from blocking."""
+        req_id = event.get("id")
+        method = event.get("method", "")
+        if not req_id:
+            return
+        if method == "confirm":
+            resp = {"type": "extension_ui_response", "id": req_id, "confirmed": True}
+        elif method == "select":
+            # Pick the first option.
+            options = event.get("options", [])
+            value = options[0] if options else ""
+            resp = {"type": "extension_ui_response", "id": req_id, "selected": value}
+        else:
+            # input / editor — cancel to avoid blocking.
+            resp = {"type": "extension_ui_response", "id": req_id, "cancelled": True}
+        try:
+            await self._send(resp)
+            log.debug("Auto-responded to extension_ui_request %s (method=%s)", req_id, method)
+        except RuntimeError:
+            pass  # Process already dead.
+
+    async def _read_response(
+        self, command: str, timeout: float = 5.0
+    ) -> dict | None:
+        """Read stdout lines until we get a response for *command*, or timeout.
+
+        Also handles extension_ui_request events that arrive during the wait,
+        preventing Pi from blocking on unanswered UI prompts.
+        """
+        if not self._process or not self._process.stdout:
+            return None
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            if not self._process or not self._process.stdout:
+                break
+            try:
+                raw = await asyncio.wait_for(
+                    self._process.stdout.readline(), timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                continue  # Keep trying until deadline.
+            if not raw:
+                break
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            try:
+                resp = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(resp, dict):
+                continue
+            # Handle extension UI requests that arrive during the wait.
+            if resp.get("type") == "extension_ui_request":
+                await self._handle_extension_ui(resp)
+                continue
+            if (
+                resp.get("type") == "response"
+                and resp.get("command") == command
+            ):
+                return resp
+        return None
 
     async def _read_events(
-        self, state: RunState
+        self, state: RunState, *, deadline: float = 0
     ) -> AsyncIterator[Event]:
         if not self._process or not self._process.stdout:
             return
@@ -127,8 +215,29 @@ class PiRunner(BaseRunner):
             if self._cancelled:
                 break
 
+            # Per-read timeout: if we get no output for 120s the process is
+            # likely stuck.  Also respect the overall run deadline.
+            now = asyncio.get_event_loop().time()
+            if deadline and now > deadline:
+                log.warning("Pi run deadline reached during read")
+                self.cancel()
+                break
+            read_timeout = 120.0
+            if deadline:
+                read_timeout = min(read_timeout, deadline - now + 0.5)
+
             try:
-                raw = await self._process.stdout.readline()
+                raw = await asyncio.wait_for(
+                    self._process.stdout.readline(), timeout=read_timeout
+                )
+            except asyncio.TimeoutError:
+                if deadline and asyncio.get_event_loop().time() >= deadline:
+                    log.warning("Pi run deadline reached (no output)")
+                    self.cancel()
+                else:
+                    log.warning("Pi produced no output for %.0fs, cancelling", read_timeout)
+                    self.cancel()
+                break
             except asyncio.CancelledError:
                 break
 
@@ -150,9 +259,6 @@ class PiRunner(BaseRunner):
             event_type = event.get("type")
             # Responses to our commands (prompt, abort, get_session_stats).
             if event_type == "response":
-                cmd = event.get("command")
-                if cmd == "get_session_stats" and event.get("success"):
-                    state._stats_response = event  # type: ignore[attr-defined]
                 continue
 
             # Agent lifecycle.
@@ -161,6 +267,9 @@ class PiRunner(BaseRunner):
                 break
 
             for parsed in self._processor.parse_event(event, state):
+                if parsed[0] == "_extension_ui_request":
+                    await self._handle_extension_ui(parsed[1])
+                    continue
                 yield parsed
 
     async def run(
@@ -190,11 +299,18 @@ class PiRunner(BaseRunner):
             # Drain stderr in background to prevent pipe buffer deadlock.
             self._stderr_task = asyncio.create_task(self._drain_stderr())
 
+            # Enable auto-retry so Pi handles transient API errors internally.
+            try:
+                await self._send({"type": "set_auto_retry", "enabled": True})
+            except RuntimeError:
+                pass  # Process died immediately — will be caught below.
+
             # Send the prompt.
             await self._send({"type": "prompt", "message": prompt})
 
-            # Stream events.
-            async for event in self._read_events(state):
+            # Stream events with overall run deadline and per-read timeout.
+            run_deadline = asyncio.get_event_loop().time() + self._config.run_timeout
+            async for event in self._read_events(state, deadline=run_deadline):
                 yield event
 
             if self._cancelled:
@@ -203,38 +319,12 @@ class PiRunner(BaseRunner):
 
             # Fetch session stats before closing.
             stats: dict | None = None
-            if self._process.stdin and not self._process.stdin.is_closing():
+            if self._is_alive() and self._process.stdin and not self._process.stdin.is_closing():
                 try:
                     await self._send(
                         {"type": "get_session_stats", "id": "stats"}
                     )
-                    # Read until we get the stats response or EOF.
-                    deadline = asyncio.get_event_loop().time() + 5.0
-                    while asyncio.get_event_loop().time() < deadline:
-                        if not self._process.stdout:
-                            break
-                        try:
-                            raw = await asyncio.wait_for(
-                                self._process.stdout.readline(), timeout=2.0
-                            )
-                        except asyncio.TimeoutError:
-                            break
-                        if not raw:
-                            break
-                        line = raw.decode(errors="replace").strip()
-                        if not line:
-                            continue
-                        try:
-                            resp = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if (
-                            isinstance(resp, dict)
-                            and resp.get("type") == "response"
-                            and resp.get("command") == "get_session_stats"
-                        ):
-                            stats = resp
-                            break
+                    stats = await self._read_response("get_session_stats", timeout=5.0)
                 except Exception:
                     log.warning(
                         "Failed to fetch session stats for %s",
@@ -250,6 +340,19 @@ class PiRunner(BaseRunner):
             session_path = None
             if isinstance(stats_data, dict):
                 session_path = stats_data.get("sessionFile") or stats_data.get("session")
+
+            # Fallback: try get_state if stats didn't include session info.
+            if not session_path and self._is_alive() and self._process.stdin and not self._process.stdin.is_closing():
+                try:
+                    await self._send({"type": "get_state", "id": "state"})
+                    state_resp = await self._read_response("get_state", timeout=3.0)
+                    if isinstance(state_resp, dict):
+                        state_data = state_resp.get("data", {})
+                        if isinstance(state_data, dict):
+                            session_path = state_data.get("sessionFile") or state_data.get("sessionId")
+                except Exception:
+                    log.debug("get_state fallback failed", exc_info=True)
+
             if isinstance(session_path, str) and session_path:
                 log.info("Pi session file for %s: %s", self.session_name, session_path)
                 yield ("session_id", session_path)
@@ -283,6 +386,7 @@ class PiRunner(BaseRunner):
         if not proc:
             return
 
+        # Close stdin first to signal graceful shutdown.
         if proc.stdin and not proc.stdin.is_closing():
             try:
                 proc.stdin.close()
@@ -292,15 +396,21 @@ class PiRunner(BaseRunner):
         try:
             proc.terminate()
         except ProcessLookupError:
-            pass
+            return  # Already dead.
 
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
         except (asyncio.TimeoutError, ProcessLookupError):
+            log.warning("Pi process did not exit after SIGTERM, escalating to SIGKILL")
             try:
                 proc.kill()
             except ProcessLookupError:
-                pass
+                return
+            # Verify it's actually dead.
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                log.error("Pi process did not die after SIGKILL")
 
     def cancel(self) -> None:
         """Request cancellation of the running session."""

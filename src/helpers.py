@@ -199,7 +199,12 @@ def delete_xmpp_account(username: str, ejabberd_ctl: str, domain: str, log) -> b
 
 def tmux_session_exists(name: str) -> bool:
     """Check if a tmux session exists."""
-    result = subprocess.run(["tmux", "has-session", "-t", name], capture_output=True)
+    try:
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", name], capture_output=True, timeout=10
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
     return result.returncode == 0
 
 
@@ -214,20 +219,24 @@ def create_tmux_session(name: str, working_dir: str) -> bool:
     if not script_path.exists():
         return False
 
-    result = subprocess.run(
-        [
-            "tmux",
-            "new-session",
-            "-d",
-            "-s",
-            name,
-            "-c",
-            working_dir,
-            str(script_path),
-            name,
-        ],
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                name,
+                "-c",
+                working_dir,
+                str(script_path),
+                name,
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
 
     if result.returncode != 0:
         return False
@@ -238,5 +247,10 @@ def create_tmux_session(name: str, working_dir: str) -> bool:
 
 def kill_tmux_session(name: str) -> bool:
     """Kill a tmux session."""
-    result = subprocess.run(["tmux", "kill-session", "-t", name], capture_output=True)
+    try:
+        result = subprocess.run(
+            ["tmux", "kill-session", "-t", name], capture_output=True, timeout=10
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
     return result.returncode == 0

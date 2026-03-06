@@ -20,6 +20,9 @@ class PiConfig:
     # None = use default, "" = skip entirely.
     system_prompt: str | None = None
 
+    # Maximum time (seconds) for an entire run before cancellation.
+    run_timeout: int = 600
+
     def resolve_bin(self) -> str:
         return self.pi_bin or os.getenv("PI_BIN", "pi")
 

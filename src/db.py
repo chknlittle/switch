@@ -293,7 +293,7 @@ class SessionRepository:
                 ),
             )
             self.conn.commit()
-        created = self.get(name)
+            created = self.get(name)
         if not created:
             raise RuntimeError(f"Failed to load newly created session: {name}")
         return created

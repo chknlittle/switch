@@ -99,6 +99,14 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             ),
             "label": "Kimi K2.5 Coding",
         },
+        "loom": {
+            "jid": os.getenv("LOOM_JID", f"loom@{domain}"),
+            "password": os.getenv("LOOM_PASSWORD", ""),
+            "engine": "pi",
+            "agent": "bridge",
+            "model_id": os.getenv("LOOM_MODEL_ID", "local-llama/glm-4.7-flash-heretic.Q8_0.gguf"),
+            "label": "GLM 4.7 Flash",
+        },
     }
 
 
@@ -326,7 +334,17 @@ def run_ejabberdctl(ejabberd_ctl: str, *args) -> tuple[bool, str]:
     else:
         cmd = ejabberd_ctl.split() + list(args)
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        _log.warning("ejabberdctl timed out after 30s: %s", cmd)
+        return False, "command timed out"
+    except FileNotFoundError as e:
+        _log.warning("ejabberdctl binary not found: %s", e)
+        return False, str(e)
+    except OSError as e:
+        _log.warning("ejabberdctl OS error: %s", e)
+        return False, str(e)
     output = result.stdout.strip() or result.stderr.strip()
     return result.returncode == 0, output
 

@@ -132,11 +132,17 @@ class PiEventProcessor:
             self._log_response(state.text)
 
         usage = stats or {}
-        tokens_in = int(usage.get("input", 0) or 0)
-        tokens_out = int(usage.get("output", 0) or 0)
-        tokens_cache_read = int(usage.get("cacheRead", 0) or 0)
-        tokens_cache_write = int(usage.get("cacheWrite", 0) or 0)
-        tokens_total = int(usage.get("total", 0) or 0)
+        # Pi nests token counts under a "tokens" sub-object:
+        # {"tokens": {"input": N, "output": N, ...}, "cost": ..., "model": ...}
+        tokens = usage.get("tokens", {}) if isinstance(usage, dict) else {}
+        if not isinstance(tokens, dict):
+            tokens = {}
+        # Fall back to top-level keys for backwards compat.
+        tokens_in = int(tokens.get("input", 0) or usage.get("input", 0) or 0)
+        tokens_out = int(tokens.get("output", 0) or usage.get("output", 0) or 0)
+        tokens_cache_read = int(tokens.get("cacheRead", 0) or usage.get("cacheRead", 0) or 0)
+        tokens_cache_write = int(tokens.get("cacheWrite", 0) or usage.get("cacheWrite", 0) or 0)
+        tokens_total = int(tokens.get("total", 0) or usage.get("total", 0) or 0)
 
         cost_info = usage.get("cost", {})
         cost_usd = 0.0
@@ -189,7 +195,11 @@ class PiEventProcessor:
             return []
 
         if event_type == "extension_ui_request":
-            # TODO: map to ("question", Question) for interactive prompts.
-            pass
+            # Return a signal so the runner can auto-respond via stdin.
+            # Fire-and-forget methods need no response.
+            method = event.get("method", "")
+            if method in ("notify", "setStatus", "setWidget", "setTitle", "set_editor_text"):
+                return []
+            return [("_extension_ui_request", event)]
 
         return []

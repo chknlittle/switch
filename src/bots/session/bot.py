@@ -52,6 +52,7 @@ from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
 from src.attachments import Attachment, AttachmentStore
 from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
+from slixmpp.xmlstream import ET
 
 if TYPE_CHECKING:
     import sqlite3
@@ -477,6 +478,57 @@ class SessionBot(BaseXMPPBot):
             return
         super().send_typing(recipient=target)
 
+    def send_image(
+        self,
+        image_data: bytes,
+        mime_type: str = "image/png",
+        caption: str | None = None,
+        recipient: str | None = None,
+    ):
+        """Send an image using XEP-0231 (Bits of Binary)."""
+        if self.shutting_down:
+            return
+
+        import base64
+        import uuid
+
+        def _safe_send(m) -> bool:
+            try:
+                m.send()
+                return True
+            except Exception:
+                self.log.warning("XMPP send failed", exc_info=True)
+                return False
+
+        target = recipient or self._default_reply_recipient()
+        is_room_target = bool(self.room_jid and target == self.room_jid)
+
+        # Create message
+        msg = self.make_message(
+            mto=target,
+            mbody=caption or "Image attached",
+            mtype="groupchat" if is_room_target else "chat",
+        )
+        if not is_room_target:
+            msg["chat_state"] = "active"
+
+        # Add BOB (Bits of Binary) image payload
+        cid = f"sha1+base64@{uuid.uuid4().hex}"
+        bob_data = ET.Element(f"{{urn:xmpp:bob}}data")
+        bob_data.set("cid", cid)
+        bob_data.set("type", mime_type)
+        bob_data.text = base64.b64encode(image_data).decode("utf-8")
+
+        # Add x:html for caption rendering
+        rich = build_xhtml_message(caption or "Image attached")
+        if rich is not None:
+            msg.xml.append(rich)
+
+        # Append BOB data to message
+        msg.xml.append(bob_data)
+
+        _safe_send(msg)
+
     def _load_room_settings(self) -> None:
         session = self.sessions.get(self.session_name)
         self.room_jid = (session.room_jid or "").split("/", 1)[0] if session else None
@@ -627,17 +679,21 @@ class SessionBot(BaseXMPPBot):
             f"curl -fsS {health_url} >/dev/null"
         )
 
-        proc = await asyncio.create_subprocess_exec(
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            host,
-            remote_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                host,
+                remote_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as e:
+            self.log.warning("vLLM hard abort: failed to spawn ssh: %s", e)
+            return
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout_s
@@ -679,14 +735,20 @@ class SessionBot(BaseXMPPBot):
         self.shutting_down = True
 
         if self._voice:
-            await self._voice.shutdown()
+            try:
+                await self._voice.shutdown()
+            except Exception:
+                self.log.warning("Voice shutdown failed during hard_kill", exc_info=True)
 
         self._runtime.shutdown()
 
         # Stop any in-flight work and drop queued messages.
         self.cancel_operations(notify=False, hard_abort_vllm=True)
 
-        self.send_reply("Session closed. Goodbye!")
+        try:
+            self.send_reply("Session closed. Goodbye!")
+        except Exception:
+            self.log.debug("Could not send goodbye during hard_kill", exc_info=True)
 
         # Give any final messages a brief chance to flush.
         await asyncio.sleep(0.25)
@@ -1171,21 +1233,33 @@ class SessionBot(BaseXMPPBot):
         self.log.info(f"Shell command: {cmd}")
         self.send_typing()
 
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=self.working_dir,
-        )
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=self.working_dir,
+            )
+        except OSError as e:
+            self.send_reply(f"$ {cmd}\nFailed to run: {e}")
+            return
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
         except asyncio.TimeoutError:
             self.log.warning("Shell command timed out after 30s, killing: %s", cmd)
-            proc.terminate()
+            try:
+                proc.terminate()
+            except ProcessLookupError:
+                pass
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except asyncio.TimeoutError:
-                proc.kill()
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                with suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=2)
             self.send_reply(f"$ {cmd}\n(timed out after 30s — process killed)")
             context_msg = (
                 f"[Shell command `{cmd}` timed out after 30s and was killed]"
@@ -1226,25 +1300,30 @@ class SessionBot(BaseXMPPBot):
 
     def _read_tail(self, path: Path, num_lines: int) -> list[str]:
         """Read last N lines from file."""
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            if f.tell() == 0:
-                return []
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                if f.tell() == 0:
+                    return []
 
-            buffer = b""
-            chunk_size = 4096
-            while len(buffer.splitlines()) <= num_lines and f.tell() > 0:
-                read_size = min(chunk_size, f.tell())
-                f.seek(-read_size, os.SEEK_CUR)
-                buffer = f.read(read_size) + buffer
-                f.seek(-read_size, os.SEEK_CUR)
+                buffer = b""
+                chunk_size = 4096
+                while len(buffer.splitlines()) <= num_lines and f.tell() > 0:
+                    read_size = min(chunk_size, f.tell())
+                    f.seek(-read_size, os.SEEK_CUR)
+                    buffer = f.read(read_size) + buffer
+                    f.seek(-read_size, os.SEEK_CUR)
 
-            lines = buffer.splitlines()
-            if lines and f.tell() > 0:
-                lines = lines[1:]  # Skip partial first line
-            return [
-                line.decode("utf-8", errors="replace") for line in lines[-num_lines:]
-            ]
+                lines = buffer.splitlines()
+                if lines and f.tell() > 0:
+                    lines = lines[1:]  # Skip partial first line
+                return [
+                    line.decode("utf-8", errors="replace")
+                    for line in lines[-num_lines:]
+                ]
+        except OSError:
+            self.log.warning("Failed to read tail of %s", path, exc_info=True)
+            return []
 
     # -------------------------------------------------------------------------
     # Message processing

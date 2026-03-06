@@ -40,7 +40,10 @@ class SubprocessTransport:
 
     def cancel(self) -> None:
         if self.process:
-            self.process.terminate()
+            try:
+                self.process.terminate()
+            except ProcessLookupError:
+                pass
 
     async def cancel_and_kill(self, timeout: float = 5.0) -> None:
         """Terminate the process, wait, then force-kill if still alive."""

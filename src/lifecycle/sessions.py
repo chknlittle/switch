@@ -282,13 +282,19 @@ async def kill_session(
             _log.warning("Failed to clean up bot for %s", name, exc_info=True)
 
     username = session.xmpp_jid.split("@")[0]
-    delete_xmpp_account(
-        username,
-        manager.ejabberd_ctl,
-        manager.xmpp_domain,
-        getattr(bot, "log", None) or _log,
-    )
-    kill_tmux_session(name)
+    try:
+        delete_xmpp_account(
+            username,
+            manager.ejabberd_ctl,
+            manager.xmpp_domain,
+            getattr(bot, "log", None) or _log,
+        )
+    except Exception:
+        _log.warning("Failed to delete XMPP account for %s", name, exc_info=True)
+    try:
+        kill_tmux_session(name)
+    except Exception:
+        _log.warning("Failed to kill tmux session for %s", name, exc_info=True)
     await manager.sessions.close(name)
     manager.session_bots.pop(name, None)
 
