@@ -159,9 +159,6 @@ class SessionBot(BaseXMPPBot):
                     meta_attrs=event.meta_attrs,
                     meta_payload=event.meta_payload,
                 )
-                # Tool/progress messages often clear typing indicators.
-                if event.meta_type == "tool":
-                    self._bot._typing.maybe_send(min_interval_s=5.0)
                 return
 
     class _SessionsAdapter(SessionStorePort):
