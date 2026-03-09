@@ -186,6 +186,7 @@ def _load_dispatchers_config(domain: str) -> dict[str, dict]:
     default_files = [
         Path.cwd() / "dispatchers.local.json",
         Path.cwd() / "dispatchers.json",
+        Path.cwd() / "dispatchers.example.json",
     ]
 
     payload: object | None = None

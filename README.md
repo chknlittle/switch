@@ -18,7 +18,7 @@ The point: your chat stack is yours, and the agents handle the plumbing.
 
 The screenshots show a representative setup with multiple orchestrators and session contacts sharing the same XMPP server.
 
-For local/private deployments, keep your real JIDs in `dispatchers.local.json` (gitignored). The committed `dispatchers.json` stays public-safe as an example config for new clones.
+For local/private deployments, keep your real JIDs in `dispatchers.json` or `dispatchers.local.json` (both gitignored). The committed `dispatchers.example.json` is the public-safe starter config for new clones.
 
 <table>
 <tr>
@@ -162,7 +162,7 @@ Switch between engines mid-session with `/agent cc`, `/agent oc`, or `/agent pi`
 ```bash
 uv sync                              # install deps
 cp .env.example .env                 # configure
-cp dispatchers.json dispatchers.local.json  # localize dispatcher JIDs/models
+cp dispatchers.example.json dispatchers.json  # or dispatchers.local.json
 ln -sf ~/switch/AGENTS.md ~/CLAUDE.md  # agent instructions symlink
 uv run python -m src.bridge          # run
 ```
