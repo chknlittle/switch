@@ -12,7 +12,7 @@ import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, TypeVar
 
 from src.utils import BaseXMPPBot, get_xmpp_config, run_ejabberdctl
 
@@ -120,13 +120,15 @@ def _default_delegate_dispatcher() -> str:
     ).strip() or "oc-codex"
 
 
+T = TypeVar("T")
+
+
 async def _poll_until(
     *,
-    timeout_s: float,
+    deadline: float,
     poll_interval_s: float,
-    step: Callable[[], object | None],
-) -> object | None:
-    deadline = time.monotonic() + max(5.0, float(timeout_s or 0.0))
+    step: Callable[[], T | None],
+) -> T | None:
     poll_interval = max(0.1, float(poll_interval_s or 1.0))
 
     while time.monotonic() < deadline:
@@ -327,6 +329,7 @@ async def delegate_once(
 ) -> DelegationResult:
     token = (token or f"switch-delegate-{secrets.token_hex(6)}").strip()
     envelope = build_envelope(token=token, prompt=prompt, parent_session=parent_session)
+    deadline = time.monotonic() + max(5.0, float(timeout_s or 0.0))
 
     min_message_id = get_latest_message_id(conn)
     if send_func is not None:
@@ -352,7 +355,7 @@ async def delegate_once(
         )
 
     session_ref = await _poll_until(
-        timeout_s=timeout_s,
+        deadline=deadline,
         poll_interval_s=poll_interval_s,
         step=_find_spawned_session,
     )
@@ -376,7 +379,7 @@ async def delegate_once(
         )
 
     reply = await _poll_until(
-        timeout_s=timeout_s,
+        deadline=deadline,
         poll_interval_s=poll_interval_s,
         step=_find_reply,
     )
