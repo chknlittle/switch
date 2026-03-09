@@ -29,7 +29,7 @@ class _QuestionHandler:
         client: OpenCodeClient,
         question: Question,
         *,
-        cancelled,
+        cancel_event: asyncio.Event,
     ) -> None:
         raise NotImplementedError
 
@@ -41,7 +41,7 @@ class _RejectQuestionHandler(_QuestionHandler):
         client: OpenCodeClient,
         question: Question,
         *,
-        cancelled,
+        cancel_event: asyncio.Event,
     ) -> None:
         # Always make forward progress: if the higher-level app isn't wired to
         # answer questions, reject them immediately.
@@ -52,23 +52,41 @@ class _CallbackQuestionHandler(_QuestionHandler):
     def __init__(self, callback: QuestionCallback):
         self._callback = callback
 
+    @staticmethod
+    async def _await_callback_or_cancel(
+        callback_task: asyncio.Task[list[str]],
+        cancel_event: asyncio.Event,
+    ) -> list[str]:
+        cancel_task = asyncio.create_task(cancel_event.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {callback_task, cancel_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancel_task in done and cancel_event.is_set():
+                callback_task.cancel()
+                raise asyncio.CancelledError()
+            return await callback_task
+        finally:
+            if not cancel_task.done():
+                cancel_task.cancel()
+                try:
+                    await cancel_task
+                except asyncio.CancelledError:
+                    pass
+
     async def handle(
         self,
         session: aiohttp.ClientSession,
         client: OpenCodeClient,
         question: Question,
         *,
-        cancelled,
+        cancel_event: asyncio.Event,
     ) -> None:
         callback_task = asyncio.create_task(self._callback(question))
         answered = False
         try:
-            while not callback_task.done():
-                if cancelled():
-                    callback_task.cancel()
-                    raise asyncio.CancelledError()
-                await asyncio.sleep(0.1)
-            answers = callback_task.result()
+            answers = await self._await_callback_or_cancel(callback_task, cancel_event)
             await client.answer_question(session, question, answers)
             answered = True
         finally:
@@ -129,7 +147,7 @@ class OpenCodeRunner(BaseRunner):
             session,
             self._client,
             question,
-            cancelled=lambda: self._transport.cancelled,
+            cancel_event=self._transport.cancel_event,
         )
 
     async def run(

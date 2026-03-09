@@ -24,14 +24,20 @@ class OpenCodeTransport:
         self._client_session: aiohttp.ClientSession | None = None
         self._active_session_id: str | None = None
         self._cancelled = False
+        self._cancel_event = asyncio.Event()
         self._abort_task: asyncio.Task | None = None
 
     @property
     def cancelled(self) -> bool:
         return self._cancelled
 
+    @property
+    def cancel_event(self) -> asyncio.Event:
+        return self._cancel_event
+
     def cancel(self) -> None:
         self._cancelled = True
+        self._cancel_event.set()
         if (
             self._client_session
             and self._active_session_id
@@ -168,6 +174,7 @@ class OpenCodeTransport:
         """
 
         self._cancelled = True
+        self._cancel_event.set()
 
         if sse_task:
             sse_task.cancel()
