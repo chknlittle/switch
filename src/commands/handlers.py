@@ -84,6 +84,37 @@ class CommandHandler:
 
         return False
 
+    def _recent_messages(
+        self, session_name: str | None = None, limit: int = 10
+    ) -> list[Any]:
+        target_session = session_name or self.bot.session_name
+        return self.bot.messages.list_recent(target_session, limit=limit)
+
+    def _latest_message(
+        self, role: str, *, session_name: str | None = None, limit: int = 10
+    ) -> Any | None:
+        for msg in self._recent_messages(session_name=session_name, limit=limit):
+            if msg.role == role and msg.content.strip():
+                return msg
+        return None
+
+    @staticmethod
+    def _truncate_content(content: str, limit: int) -> str:
+        if len(content) <= limit:
+            return content
+        return content[:limit] + "..."
+
+    def _format_message_lines(
+        self, messages: list[Any], *, truncate_at: int
+    ) -> list[str]:
+        lines: list[str] = []
+        for msg in messages:
+            prefix = "User" if msg.role == "user" else "Assistant"
+            lines.append(
+                f"{prefix}: {self._truncate_content(msg.content, truncate_at)}"
+            )
+        return lines
+
     @command("/dispatchers", "/delegates")
     async def dispatchers(self, _body: str) -> bool:
         """List configured dispatchers available for delegation."""
@@ -384,11 +415,10 @@ class CommandHandler:
     @command("/last")
     async def last(self, _body: str) -> bool:
         """Show last assistant message."""
-        messages = self.bot.messages.list_recent(self.bot.session_name, limit=10)
-        for msg in messages:  # newest-first (ORDER BY id DESC)
-            if msg.role == "assistant" and msg.content.strip():
-                self.bot.send_reply(msg.content)
-                return True
+        msg = self._latest_message("assistant", limit=10)
+        if msg:
+            self.bot.send_reply(msg.content)
+            return True
         self.bot.send_reply("No assistant messages in this session.")
         return True
 
@@ -398,15 +428,17 @@ class CommandHandler:
         if self.bot.processing:
             self.bot.send_reply("Already processing. /cancel first, then /retry.")
             return True
-        messages = self.bot.messages.list_recent(self.bot.session_name, limit=20)
-        for msg in messages:
-            if msg.role == "user" and msg.content.strip():
-                self.bot.send_reply(f"Retrying: {msg.content[:80]}...")
-                await self.bot.session.enqueue(
-                    msg.content, None,
-                    trigger_response=True, scheduled=False, wait=False,
-                )
-                return True
+        msg = self._latest_message("user", limit=20)
+        if msg:
+            self.bot.send_reply(f"Retrying: {self._truncate_content(msg.content, 80)}")
+            await self.bot.session.enqueue(
+                msg.content,
+                None,
+                trigger_response=True,
+                scheduled=False,
+                wait=False,
+            )
+            return True
         self.bot.send_reply("No user messages to retry.")
         return True
 
@@ -416,18 +448,14 @@ class CommandHandler:
         if self.bot.processing:
             self.bot.send_reply("Already processing. Try /recap after current work completes.")
             return True
-        messages = self.bot.messages.list_recent(self.bot.session_name, limit=40)
+        messages = self._recent_messages(limit=40)
         if not messages:
             self.bot.send_reply("No messages in this session.")
             return True
 
         # Chronological order, truncate long messages
         messages = list(reversed(messages))
-        lines = []
-        for msg in messages:
-            prefix = "User" if msg.role == "user" else "Assistant"
-            content = msg.content[:500] + ("..." if len(msg.content) > 500 else "")
-            lines.append(f"{prefix}: {content}")
+        lines = self._format_message_lines(messages, truncate_at=500)
 
         recap_prompt = (
             "Summarize this conversation concisely. "
@@ -466,17 +494,13 @@ class CommandHandler:
             self.bot.send_reply(f"Session '{source_name}' not found.")
             return True
 
-        messages = self.bot.messages.list_recent(source_name, limit=limit)
+        messages = self._recent_messages(session_name=source_name, limit=limit)
         if not messages:
             self.bot.send_reply(f"No messages in '{source_name}'.")
             return True
 
         messages = list(reversed(messages))  # chronological
-        lines = []
-        for msg in messages:
-            prefix = "User" if msg.role == "user" else "Assistant"
-            content = msg.content[:800] + ("..." if len(msg.content) > 800 else "")
-            lines.append(f"{prefix}: {content}")
+        lines = self._format_message_lines(messages, truncate_at=800)
 
         context_text = (
             f"[Context from session '{source_name}' — {len(messages)} messages. "
@@ -510,11 +534,9 @@ class CommandHandler:
 
         prompt = parts[2].strip() if len(parts) > 2 else None
         if not prompt:
-            messages = self.bot.messages.list_recent(self.bot.session_name, limit=10)
-            for msg in messages:
-                if msg.role == "assistant" and msg.content.strip():
-                    prompt = msg.content
-                    break
+            msg = self._latest_message("assistant", limit=10)
+            if msg:
+                prompt = msg.content
             if not prompt:
                 self.bot.send_reply("No prompt and no assistant messages to hand off.")
                 return True
