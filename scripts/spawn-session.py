@@ -19,6 +19,8 @@ Notes:
 
 import asyncio
 import os
+import secrets
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -28,7 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.utils import BaseXMPPBot, get_xmpp_config, load_env
+from src.delegation import find_spawned_session_for_token, get_latest_message_id, send_dispatcher_message
+from src.utils import get_xmpp_config, load_env
 
 # Load environment
 load_env()
@@ -68,27 +71,6 @@ def _parse_args(argv: list[str]) -> tuple[str, str] | None:
 
     return dispatcher_name, message
 
-
-class SpawnBot(BaseXMPPBot):
-    def __init__(self, jid, password, target_jid, message):
-        super().__init__(jid, password, recipient=target_jid)
-        self.spawn_message = message
-        self.add_event_handler("session_start", self.on_start)
-        self.add_event_handler("failed_auth", self.on_failed_auth)
-
-    def on_failed_auth(self, event):
-        pass  # Slixmpp sometimes fires this even on success
-
-    async def on_start(self, event):
-        self.send_presence()
-        self.send_reply(self.spawn_message)
-        print(f"Sent to {self.recipient}")
-        print(f"Message: {self.spawn_message[:100]}...")
-
-        await asyncio.sleep(2)
-        self.disconnect()
-
-
 async def main():
     parsed = _parse_args(sys.argv[1:])
     if not parsed:
@@ -123,15 +105,40 @@ async def main():
         )
         sys.exit(1)
 
-    bot = SpawnBot(dispatcher_jid, dispatcher_password, dispatcher_jid, message)
-    bot.connect_to_server(XMPP_SERVER)
+    token = f"switch-spawn-{secrets.token_hex(6)}"
+    envelope = f"[{token}]\n{message}"
+    conn = sqlite3.connect(REPO_ROOT / "sessions.db")
+    conn.row_factory = sqlite3.Row
+    min_message_id = get_latest_message_id(conn)
 
     try:
-        await asyncio.wait_for(bot.disconnected, timeout=10)
-        print("New session should be spawning...")
-    except asyncio.TimeoutError:
-        print("Timeout")
-        bot.disconnect()
+        await send_dispatcher_message(
+            server=XMPP_SERVER,
+            dispatcher_jid=dispatcher_jid,
+            dispatcher_password=dispatcher_password,
+            body=envelope,
+        )
+        print(f"Sent spawn request to {dispatcher_jid}")
+
+        for _ in range(30):
+            conn.commit()
+            spawned = find_spawned_session_for_token(
+                conn,
+                dispatcher_jid=dispatcher_jid,
+                token=token,
+                min_message_id=min_message_id,
+            )
+            if spawned:
+                session_name, _message_id = spawned
+                print(f"Spawned session: {session_name}@{cfg['domain']}")
+                print("New session should be visible in your chat client shortly.")
+                return
+            await asyncio.sleep(1)
+
+        print("Spawn request sent, but timed out waiting for DB confirmation.")
+        print("The session may still appear shortly in XMPP/tmux.")
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

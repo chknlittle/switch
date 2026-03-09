@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Protocol, Callable
 
 from src.helpers import (
@@ -63,12 +64,89 @@ class _SessionCreateManager(Protocol):
     ) -> None: ...
 
 
+def _normalize_collaborators(
+    recipient: str, collaborators: list[str] | None
+) -> list[str]:
+    collab_members: list[str] = []
+    seen_members: set[str] = set()
+    for candidate in [recipient, *(collaborators or [])]:
+        bare = (candidate or "").split("/", 1)[0].strip()
+        if not bare or bare in seen_members:
+            continue
+        seen_members.add(bare)
+        collab_members.append(bare)
+    return collab_members
+
+
+def _room_jid_for_session(
+    manager: _SessionCreateManager, name: str, collab_members: list[str]
+) -> str | None:
+    if len(collab_members) <= 1:
+        return None
+    muc_service = os.getenv("SWITCH_MUC_SERVICE", f"conference.{manager.xmpp_domain}")
+    return f"{name}@{muc_service}".split("/", 1)[0]
+
+
+def _add_direct_session_roster_entries(
+    manager: _SessionCreateManager,
+    *,
+    name: str,
+    jid: str,
+    recipient: str,
+    recipient_user: str,
+    room_jid: str | None,
+) -> None:
+    if room_jid:
+        return
+    add_roster_subscription(
+        name,
+        recipient,
+        "Clients",
+        manager.ejabberd_ctl,
+        manager.xmpp_domain,
+    )
+    add_roster_subscription(
+        recipient_user, jid, "Sessions", manager.ejabberd_ctl, manager.xmpp_domain
+    )
+
+
+def _build_announcement(
+    *,
+    name: str,
+    message: str,
+    label: str | None,
+    announce: str | None,
+    announce_vars: dict[str, str] | None,
+) -> str:
+    preview = message.strip()[:50]
+    if announce is None:
+        label_str = f" ({label})" if label else ""
+        return (
+            f"Session '{name}'{label_str}. Processing: {preview}..."
+            if preview
+            else f"Session '{name}'{label_str}."
+        )
+
+    fmt_vars: dict[str, str] = {
+        "name": name,
+        "label": label or "",
+        "preview": preview,
+    }
+    if announce_vars:
+        fmt_vars.update({str(k): str(v) for k, v in announce_vars.items() if k})
+    try:
+        return announce.format(**fmt_vars)
+    except Exception:
+        return announce
+
+
 async def create_session(
     manager: _SessionCreateManager,
     first_message: str,
     *,
     engine: str = "pi",
     model_id: str | None = None,
+    opencode_agent: str | None = None,
     label: str | None = None,
     name_hint: str | None = None,
     announce: str | None = None,
@@ -111,34 +189,19 @@ async def create_session(
     recipient = (owner_jid or manager.xmpp_recipient).split("/", 1)[0]
     recipient_user = recipient.split("@")[0]
 
-    collab_members: list[str] = []
-    seen_members: set[str] = set()
-    for candidate in [recipient, *(collaborators or [])]:
-        bare = (candidate or "").split("/", 1)[0].strip()
-        if not bare or bare in seen_members:
-            continue
-        seen_members.add(bare)
-        collab_members.append(bare)
-
-    room_jid: str | None = None
-    collab_mode = len(collab_members) > 1
-    if collab_mode:
-        muc_service = os.getenv("SWITCH_MUC_SERVICE", f"conference.{manager.xmpp_domain}")
-        room_jid = f"{name}@{muc_service}".split("/", 1)[0]
+    collab_members = _normalize_collaborators(recipient, collaborators)
+    room_jid = _room_jid_for_session(manager, name, collab_members)
 
     # Room-based collaborative sessions should not appear as direct 1:1 contacts.
     # Keep roster subscriptions only for non-collab sessions.
-    if not collab_mode:
-        add_roster_subscription(
-            name,
-            recipient,
-            "Clients",
-            manager.ejabberd_ctl,
-            manager.xmpp_domain,
-        )
-        add_roster_subscription(
-            recipient_user, jid, "Sessions", manager.ejabberd_ctl, manager.xmpp_domain
-        )
+    _add_direct_session_roster_entries(
+        manager,
+        name=name,
+        jid=jid,
+        recipient=recipient,
+        recipient_user=recipient_user,
+        room_jid=room_jid,
+    )
 
     # Each session gets its own working directory.
     session_work_dir = Path(manager.working_dir) / "sessions" / name
@@ -153,6 +216,7 @@ async def create_session(
         tmux_name=name,
         model_id=model_id,
         active_engine=engine,
+        opencode_agent=opencode_agent,
         dispatcher_jid=dispatcher_jid,
         owner_jid=recipient,
         room_jid=room_jid,
@@ -167,29 +231,22 @@ async def create_session(
             name,
             getattr(bot, "startup_error", "unknown error"),
         )
-        await _rollback_failed_create(manager, name, jid, dispatcher_jid=dispatcher_jid)
+        await _rollback_failed_create(
+            manager,
+            name,
+            jid,
+            dispatcher_jid=dispatcher_jid,
+            session_work_dir=session_work_dir,
+        )
         return None
 
-    preview = (message or "").strip()[:50]
-    if announce is None:
-        label_str = f" ({label})" if label else ""
-        announce = (
-            f"Session '{name}'{label_str}. Processing: {preview}..."
-            if preview
-            else f"Session '{name}'{label_str}."
-        )
-    else:
-        fmt_vars: dict[str, str] = {
-            "name": name,
-            "label": label or "",
-            "preview": preview,
-        }
-        if announce_vars:
-            fmt_vars.update({str(k): str(v) for k, v in announce_vars.items() if k})
-        try:
-            announce = announce.format(**fmt_vars)
-        except Exception:
-            pass
+    announce = _build_announcement(
+        name=name,
+        message=message,
+        label=label,
+        announce=announce,
+        announce_vars=announce_vars,
+    )
 
     bot.send_reply(announce)
 
@@ -206,6 +263,7 @@ async def _rollback_failed_create(
     jid: str,
     *,
     dispatcher_jid: str | None,
+    session_work_dir: Path | None = None,
 ) -> None:
     bot = manager.session_bots.pop(name, None)
     if bot:
@@ -213,7 +271,9 @@ async def _rollback_failed_create(
             bot.shutting_down = True
             bot.disconnect()
         except Exception:
-            _log.warning("Failed to disconnect bot during rollback for %s", name, exc_info=True)
+            _log.warning(
+                "Failed to disconnect bot during rollback for %s", name, exc_info=True
+            )
 
     try:
         delete_xmpp_account(
@@ -223,22 +283,42 @@ async def _rollback_failed_create(
             _log,
         )
     except Exception:
-        _log.warning("Failed to delete XMPP account during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to delete XMPP account during rollback for %s", name, exc_info=True
+        )
 
     try:
         kill_tmux_session(name)
     except Exception:
-        _log.warning("Failed to kill tmux session during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to kill tmux session during rollback for %s", name, exc_info=True
+        )
 
     try:
         await manager.sessions.delete(name)
     except Exception:
-        _log.warning("Failed to delete DB row during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to delete DB row during rollback for %s", name, exc_info=True
+        )
+
+    if session_work_dir is not None:
+        try:
+            shutil.rmtree(session_work_dir, ignore_errors=False)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            _log.warning(
+                "Failed to remove working directory during rollback for %s",
+                name,
+                exc_info=True,
+            )
 
     try:
         manager.notify_directory_sessions_changed(dispatcher_jid=dispatcher_jid)
     except Exception:
-        _log.warning("Failed to notify directory during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to notify directory during rollback for %s", name, exc_info=True
+        )
 
 
 async def kill_session(

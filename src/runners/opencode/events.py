@@ -90,12 +90,41 @@ def coerce_event(payload: dict) -> dict | None:
 
         if event_type == "message.part.updated":
             part = props.get("part")
-            if isinstance(part, dict) and part.get("type") == "text":
+            if isinstance(part, dict):
+                part_type = part.get("type")
+                if part_type == "text":
+                    return {
+                        "type": "message_part",
+                        "sessionID": part.get("sessionID"),
+                        "messageID": part.get("messageID"),
+                        "text": part.get("text", ""),
+                    }
+                if part_type == "step-start":
+                    return {
+                        "type": "step_start",
+                        "sessionID": part.get("sessionID"),
+                    }
+                if part_type == "step-finish":
+                    return {
+                        "type": "step_finish",
+                        "part": part,
+                    }
+
+        if event_type == "message.part.delta":
+            message_id = props.get("messageID")
+            field = props.get("field")
+            delta = props.get("delta")
+            if (
+                isinstance(message_id, str)
+                and message_id
+                and field == "text"
+                and isinstance(delta, str)
+            ):
                 return {
-                    "type": "message_part",
-                    "sessionID": part.get("sessionID"),
-                    "messageID": part.get("messageID"),
-                    "text": part.get("text", ""),
+                    "type": "message_part_delta",
+                    "sessionID": props.get("sessionID"),
+                    "messageID": message_id,
+                    "text": delta,
                 }
 
         if event_type in {"question.asked", "question"}:

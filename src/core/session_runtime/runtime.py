@@ -23,7 +23,6 @@ from src.attachments import Attachment
 from src.runners import Question, Runner
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
-from src.runners.weaver.config import WeaverConfig
 
 from src.core.session_runtime.api import (
     EventSinkPort,
@@ -903,7 +902,7 @@ class SessionRuntime:
     ) -> "SessionRuntime._RalphIterationResult":
         result = SessionRuntime._RalphIterationResult()
         engine = (cfg.force_engine or session.active_engine or "pi").strip().lower()
-        if engine not in {"claude", "pi", "opencode", "weaver"}:
+        if engine not in {"claude", "pi", "opencode", "vllm-direct"}:
             log.warning("Ralph: engine %r not supported, falling back to pi", engine)
             engine = "pi"
 
@@ -920,7 +919,10 @@ class SessionRuntime:
             accumulated = ""
             tool_summaries: list[str] = []
             last_progress_at = 0
-            async for event_type, content in self.runner.run(prompt, session_id):
+            runner = self.runner
+            if runner is None:
+                raise RuntimeError(f"Runner not initialized for engine '{engine}'")
+            async for event_type, content in runner.run(prompt, session_id):
                 if event_type == "session_id" and isinstance(content, str) and content:
                     if not cfg.prompt_only:
                         await self._save_session_id(engine, content)
@@ -962,9 +964,10 @@ class SessionRuntime:
         finally:
             runner_ref = self.runner
             self.runner = None
-            if runner_ref and hasattr(runner_ref, "cleanup"):
+            cleanup = getattr(runner_ref, "cleanup", None)
+            if callable(cleanup):
                 try:
-                    await runner_ref.cleanup()
+                    await cleanup()
                 except Exception:
                     log.warning("Runner cleanup failed", exc_info=True)
         return result
@@ -997,6 +1000,7 @@ class SessionRuntime:
                 opencode_config=OpenCodeConfig(
                     model=session.model_id or None,
                     reasoning_mode=session.reasoning_mode,
+                    agent=session.opencode_agent or "bridge",
                     question_callback=self._create_question_callback(engine="opencode"),
                 ),
             )
@@ -1008,13 +1012,13 @@ class SessionRuntime:
                 session_name=self.session_name,
                 pi_config=pi_config or PiConfig(model=session.model_id or None),
             )
-        elif engine == "weaver":
+        elif engine == "vllm-direct":
             self.runner = self._runner_factory.create(
-                "weaver",
+                "vllm-direct",
                 working_dir=self.working_dir,
                 output_dir=self.output_dir,
                 session_name=self.session_name,
-                weaver_config=WeaverConfig.from_env(),
+                pi_config=pi_config or PiConfig(model=session.model_id or None),
             )
         else:
             raise ValueError(f"Unknown engine: {engine}")
@@ -1027,8 +1031,6 @@ class SessionRuntime:
             return session.opencode_session_id
         if engine == "pi":
             return session.pi_session_id
-        if engine == "weaver":
-            return session.weaver_session_id
         return None
 
     async def _save_session_id(self, engine: str, session_id: str) -> None:
@@ -1040,13 +1042,11 @@ class SessionRuntime:
             )
         elif engine == "pi":
             await self._sessions.update_pi_session_id(self.session_name, session_id)
-        elif engine == "weaver":
-            await self._sessions.update_weaver_session_id(self.session_name, session_id)
 
     async def _run_engine(
         self, *, engine: str, session: SessionState, prompt: str
     ) -> None:
-        if engine not in {"claude", "pi", "opencode", "weaver"}:
+        if engine not in {"claude", "pi", "opencode", "vllm-direct"}:
             await self._emit(OutboundMessage(f"Unknown engine '{engine}'."))
             return
         await self._run_engine_generic(engine, session, prompt)
@@ -1078,7 +1078,10 @@ class SessionRuntime:
         last_progress_at = 0
 
         try:
-            async for event_type, content in self.runner.run(prompt, session_id):
+            runner = self.runner
+            if runner is None:
+                raise RuntimeError(f"Runner not initialized for engine '{engine}'")
+            async for event_type, content in runner.run(prompt, session_id):
                 if self.shutting_down:
                     return
 
@@ -1118,9 +1121,10 @@ class SessionRuntime:
         finally:
             runner_ref = self.runner
             self.runner = None
-            if runner_ref and hasattr(runner_ref, "cleanup"):
+            cleanup = getattr(runner_ref, "cleanup", None)
+            if callable(cleanup):
                 try:
-                    await runner_ref.cleanup()
+                    await cleanup()
                 except Exception:
                     log.warning("Runner cleanup failed", exc_info=True)
 

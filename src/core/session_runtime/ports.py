@@ -13,7 +13,6 @@ from typing import Protocol
 from src.runners import Runner, RunnerEvent
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
-from src.runners.weaver.config import WeaverConfig
 from src.attachments import Attachment
 
 
@@ -24,9 +23,9 @@ class SessionState:
     claude_session_id: str | None
     opencode_session_id: str | None
     pi_session_id: str | None
-    weaver_session_id: str | None
     model_id: str | None
     reasoning_mode: str
+    opencode_agent: str | None
 
 
 class SessionStorePort(Protocol):
@@ -40,11 +39,12 @@ class SessionStorePort(Protocol):
 
     async def update_pi_session_id(self, name: str, session_id: str) -> None: ...
 
-    async def update_weaver_session_id(self, name: str, session_id: str) -> None: ...
 
 
 class MessageStorePort(Protocol):
-    async def add(self, session_name: str, role: str, content: str, engine: str) -> None: ...
+    async def add(
+        self, session_name: str, role: str, content: str, engine: str
+    ) -> None: ...
 
 
 class RunnerFactoryPort(Protocol):
@@ -57,12 +57,13 @@ class RunnerFactoryPort(Protocol):
         session_name: str,
         pi_config: PiConfig | None = None,
         opencode_config: OpenCodeConfig | None = None,
-        weaver_config: WeaverConfig | None = None,
     ) -> Runner: ...
 
 
 class HistoryPort(Protocol):
-    def append_to_history(self, message: str, working_dir: str, claude_session_id: str | None) -> None: ...
+    def append_to_history(
+        self, message: str, working_dir: str, claude_session_id: str | None
+    ) -> None: ...
 
     def log_activity(self, message: str, *, session: str, source: str) -> None: ...
 
@@ -72,7 +73,9 @@ class RunnerEventSinkPort(Protocol):
 
 
 class AttachmentPromptPort(Protocol):
-    def augment_prompt(self, body: str, attachments: list[Attachment] | None) -> str: ...
+    def augment_prompt(
+        self, body: str, attachments: list[Attachment] | None
+    ) -> str: ...
 
 
 class RalphLoopStorePort(Protocol):

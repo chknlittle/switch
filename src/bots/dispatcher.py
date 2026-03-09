@@ -50,6 +50,7 @@ class DispatcherBot(BaseXMPPBot):
         *,
         engine: str = "pi",
         model_id: str | None = None,
+        agent: str | None = None,
         label: str = "Pi",
     ):
         super().__init__(jid, password)
@@ -65,6 +66,7 @@ class DispatcherBot(BaseXMPPBot):
         self.manager: SessionManager | None = manager
         self.engine = engine
         self.model_id = model_id
+        self.agent = agent
         self.label = label
 
         self.add_event_handler("session_start", self.on_start)
@@ -74,9 +76,13 @@ class DispatcherBot(BaseXMPPBot):
         # Voice call support — transcribed speech creates a new session
         self._voice: VoiceCallManager | None = None
         if os.getenv("SWITCH_VOICE_ENABLED", "0").strip().lower() in {
-            "1", "true", "yes", "on",
+            "1",
+            "true",
+            "yes",
+            "on",
         }:
             from src.voice import VoiceCallManager as _VCM
+
             self._voice = _VCM(self, on_transcription=self._on_voice_transcription)
 
         self._commands: dict[str, Callable[[str, str], Coroutine]] = {
@@ -122,7 +128,9 @@ class DispatcherBot(BaseXMPPBot):
             except Exception:
                 self.log.warning("Dispatcher reconnect attempt %d failed", attempt)
                 delay = min(delay * 2, max_delay)
-        self.log.error("Dispatcher gave up reconnecting after %d attempts", max_attempts)
+        self.log.error(
+            "Dispatcher gave up reconnecting after %d attempts", max_attempts
+        )
         self._reconnecting = False
 
     async def _on_voice_transcription(self, text: str) -> None:
@@ -274,9 +282,7 @@ class DispatcherBot(BaseXMPPBot):
             host, repo = arg.split(":", 1)
             repo_path = f"~/{repo}" if not repo.startswith("/") else repo
 
-            self.send_reply(
-                f"Committing {repo} on {host}...", recipient=reply_to
-            )
+            self.send_reply(f"Committing {repo} on {host}...", recipient=reply_to)
 
             prompt = (
                 f"This project is on remote host '{host}'. "
@@ -288,9 +294,7 @@ class DispatcherBot(BaseXMPPBot):
             # Local repo
             repo_path = Path.home() / arg
             if not (repo_path / ".git").exists():
-                self.send_reply(
-                    f"Not a git repo: {repo_path}", recipient=reply_to
-                )
+                self.send_reply(f"Not a git repo: {repo_path}", recipient=reply_to)
                 return
 
             self.send_reply(f"Committing {arg}...", recipient=reply_to)
@@ -351,12 +355,7 @@ class DispatcherBot(BaseXMPPBot):
         return bare.lower()
 
     def _parse_new_args(self, arg: str) -> tuple[list[str], str] | None:
-        arg = (
-            arg.replace("—", "-")
-            .replace("–", "-")
-            .replace("−", "-")
-            .strip()
-        )
+        arg = arg.replace("—", "-").replace("–", "-").replace("−", "-").strip()
         try:
             tokens = shlex.split(arg)
         except ValueError:
@@ -463,9 +462,7 @@ class DispatcherBot(BaseXMPPBot):
             )
 
         if not self.manager:
-            self.send_reply(
-                "Session manager unavailable.", recipient=reply_to
-            )
+            self.send_reply("Session manager unavailable.", recipient=reply_to)
             return
         manager = cast("SessionManager", self.manager)
 
@@ -480,6 +477,7 @@ class DispatcherBot(BaseXMPPBot):
                 "",
                 engine=self.engine,
                 model_id=self.model_id,
+                opencode_agent=self.agent,
                 label=self.label,
                 name_hint="ralph",
                 announce="Ralph session '{name}' ({label}). Starting loop...",
@@ -497,9 +495,7 @@ class DispatcherBot(BaseXMPPBot):
         if swarm <= 1:
             created = await _start_one()
             if not created:
-                self.send_reply(
-                    "Failed to create Ralph session", recipient=reply_to
-                )
+                self.send_reply("Failed to create Ralph session", recipient=reply_to)
                 return
             self.send_reply(
                 f"Started Ralph in {created}@{self.xmpp_domain}",
@@ -514,9 +510,7 @@ class DispatcherBot(BaseXMPPBot):
                 names.append(created)
 
         if not names:
-            self.send_reply(
-                "Failed to create Ralph swarm sessions", recipient=reply_to
-            )
+            self.send_reply("Failed to create Ralph swarm sessions", recipient=reply_to)
             return
 
         lines = [
@@ -546,6 +540,7 @@ class DispatcherBot(BaseXMPPBot):
             message or first_message,
             engine=self.engine,
             model_id=self.model_id,
+            opencode_agent=self.agent,
             label=self.label,
             on_reserved=lambda n: self.send_reply(
                 f"Creating: {n} ({self.label})...", recipient=reply_to

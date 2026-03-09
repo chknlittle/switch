@@ -17,6 +17,7 @@ from slixmpp.xmlstream import ET
 
 SWITCH_META_NS = "urn:switch:message-meta"
 _log = logging.getLogger("utils")
+_PLACEHOLDER_XMPP_DOMAINS = {"your.xmpp.server"}
 
 
 def _parse_bool(value: object, default: bool = False) -> bool:
@@ -132,6 +133,12 @@ def _normalize_dispatchers(payload: object, *, domain: str) -> dict[str, dict]:
     for fallback_name, item in entries:
         name = str(item.get("name") or fallback_name).strip() or fallback_name
         jid = str(item.get("jid") or f"{name}@{domain}").strip()
+        if jid:
+            bare, sep, resource = jid.partition("/")
+            localpart, at, jid_domain = bare.partition("@")
+            if at and jid_domain in _PLACEHOLDER_XMPP_DOMAINS and domain not in _PLACEHOLDER_XMPP_DOMAINS:
+                bare = f"{localpart}@{domain}"
+                jid = bare if not sep else f"{bare}/{resource}"
         if not jid:
             _log.warning("Skipping dispatcher %s: missing jid", name)
             continue
@@ -179,6 +186,7 @@ def _load_dispatchers_config(domain: str) -> dict[str, dict]:
     default_files = [
         Path.cwd() / "dispatchers.local.json",
         Path.cwd() / "dispatchers.json",
+        Path.cwd() / "dispatchers.example.json",
     ]
 
     payload: object | None = None
@@ -383,9 +391,8 @@ class BaseXMPPBot(ClientXMPP):
         self.enable_starttls = False
         self.enable_direct_tls = False
         self.enable_plaintext = True
-        # slixmpp ClientXMPP.connect(host, port) requires separate args.
-        # Passing a tuple is ignored in newer versions and falls back to JID domain.
-        self.connect(server, port)
+        # Slixmpp expects the address as a `(host, port)` tuple.
+        self.connect((server, port))
 
     def set_connected(self, connected: bool) -> None:
         if connected:

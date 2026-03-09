@@ -75,6 +75,23 @@ class OpenCodeEventProcessor:
             state.message_roles[message_id] = role
         return None
 
+    def _handle_message_part_delta(self, event: dict, state: RunState) -> Event | None:
+        message_id = event.get("messageID")
+        role = (
+            state.message_roles.get(message_id)
+            if isinstance(message_id, str) and message_id
+            else None
+        )
+        if role != "assistant":
+            return None
+
+        text = event.get("text", "")
+        if not isinstance(text, str) or not text:
+            return None
+
+        state.text += text
+        return ("text", text)
+
     def _handle_tool_use(self, event: dict, state: RunState) -> Event | None:
         part = event.get("part", {})
         if not isinstance(part, dict):
@@ -161,7 +178,11 @@ class OpenCodeEventProcessor:
                     title = _clean_label(cmd, max_len=100)
 
             # Some servers send bash input as a plain string command.
-            if str(tool) == "bash" and title is None and isinstance(tool_input_obj, str):
+            if (
+                str(tool) == "bash"
+                and title is None
+                and isinstance(tool_input_obj, str)
+            ):
                 title = _clean_label(tool_input_obj, max_len=100)
 
             # Generic fallback: show a compact preview when available so tool
@@ -222,10 +243,7 @@ class OpenCodeEventProcessor:
 
             # If a follow-up SSE update finally contains useful title/command
             # info, emit one upgraded header even when input logging is off.
-            if (
-                has_rich_header
-                and tool_id not in state.tool_header_upgraded_ids
-            ):
+            if has_rich_header and tool_id not in state.tool_header_upgraded_ids:
                 self._log_to_file(f"{desc}\n")
                 state.tool_header_upgraded_ids.add(tool_id)
                 return ("tool", desc)
@@ -465,6 +483,8 @@ class OpenCodeEventProcessor:
             return self._handle_question(event, state)
         if event_type == "message_meta":
             return self._handle_message_meta(event, state)
+        if event_type == "message_part_delta":
+            return self._handle_message_part_delta(event, state)
 
         # Server-mode streams often send message events rather than "text".
         if event_type == "message_part":

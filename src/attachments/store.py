@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import ipaddress
 import os
-import re
+import socket
 import time
 import uuid
 from dataclasses import dataclass
@@ -13,6 +15,9 @@ from urllib.parse import urlparse
 import aiohttp
 
 from .config import AttachmentsConfig, get_attachments_config
+
+
+_DEFAULT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -56,28 +61,58 @@ def _guess_ext(mime: str, url: str | None = None) -> str:
     return ".bin"
 
 
-def _is_disallowed_url(url: str) -> bool:
+def _is_public_ip(value: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return not any(
+        (
+            ip.is_private,
+            ip.is_loopback,
+            ip.is_link_local,
+            ip.is_multicast,
+            ip.is_reserved,
+            ip.is_unspecified,
+        )
+    )
+
+
+async def _is_allowed_remote_url(url: str) -> bool:
     try:
         parsed = urlparse(url)
     except Exception:
-        return True
+        return False
+
     if parsed.scheme not in {"http", "https"}:
-        return True
-    host = (parsed.hostname or "").strip().lower()
-    if not host:
+        return False
+    host = (parsed.hostname or "").strip()
+    if not host or parsed.username or parsed.password:
+        return False
+
+    if _is_public_ip(host):
         return True
     if host in {"localhost", "127.0.0.1", "::1"}:
-        return True
-    # Best-effort guardrails against obvious private IP literals.
-    if re.match(r"^10\.", host):
-        return True
-    if re.match(r"^192\.168\.", host):
-        return True
-    if re.match(r"^172\.(1[6-9]|2\d|3[0-1])\.", host):
-        return True
-    if host.startswith("169.254."):
-        return True
-    return False
+        return False
+
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return False
+
+    resolved = False
+    for family, _, _, _, sockaddr in infos:
+        if family not in {socket.AF_INET, socket.AF_INET6}:
+            continue
+        resolved = True
+        if not _is_public_ip(sockaddr[0]):
+            return False
+    return resolved
 
 
 class AttachmentStore:
@@ -117,7 +152,7 @@ class AttachmentStore:
 
     async def download_images(self, session_name: str, urls: Iterable[str]) -> list[Attachment]:
         out: list[Attachment] = []
-        max_bytes = int(os.getenv("SWITCH_ATTACHMENT_MAX_BYTES", str(10 * 1024 * 1024)))
+        max_bytes = int(os.getenv("SWITCH_ATTACHMENT_MAX_BYTES", str(_DEFAULT_ATTACHMENT_MAX_BYTES)))
         timeout_s = float(os.getenv("SWITCH_ATTACHMENT_FETCH_TIMEOUT_S", "20"))
 
         batch_dir: Path | None = None
@@ -129,11 +164,15 @@ class AttachmentStore:
         ) as session:
             for url in urls:
                 url = (url or "").strip()
-                if not url or _is_disallowed_url(url):
+                if not url or not await _is_allowed_remote_url(url):
                     continue
 
                 try:
-                    async with session.get(url, headers={"Accept": "image/*"}) as resp:
+                    async with session.get(
+                        url,
+                        headers={"Accept": "image/*"},
+                        allow_redirects=False,
+                    ) as resp:
                         if resp.status >= 400:
                             continue
                         mime = (
@@ -197,7 +236,7 @@ class AttachmentStore:
         """
 
         out: list[Attachment] = []
-        max_bytes = int(os.getenv("SWITCH_ATTACHMENT_MAX_BYTES", str(10 * 1024 * 1024)))
+        max_bytes = int(os.getenv("SWITCH_ATTACHMENT_MAX_BYTES", str(_DEFAULT_ATTACHMENT_MAX_BYTES)))
 
         batch_dir: Path | None = None
         batch_prefix: str | None = None

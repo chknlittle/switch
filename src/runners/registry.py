@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
-from src.runners.weaver.config import WeaverConfig
 
 if TYPE_CHECKING:
     from src.runners.ports import Runner
@@ -25,7 +24,6 @@ def create_runner(
     session_name: str | None = None,
     pi_config: PiConfig | None = None,
     opencode_config: OpenCodeConfig | None = None,
-    weaver_config: WeaverConfig | None = None,
 ) -> Runner:
     engine = (engine or "").strip().lower()
 
@@ -53,14 +51,19 @@ def create_runner(
             config=opencode_config,
         )
 
-    if engine == "weaver":
-        from src.runners.weaver.runner import WeaverRunner
+    if engine == "vllm-direct":
+        from src.runners.vllm_direct.runner import VLLMDirectRunner
 
-        return WeaverRunner(
+        model = None
+        if opencode_config and opencode_config.model:
+            model = opencode_config.model
+        elif pi_config and pi_config.model:
+            model = pi_config.model
+        return VLLMDirectRunner(
             working_dir,
             output_dir,
             session_name,
-            config=weaver_config,
+            model=model,
         )
 
     raise ValueError(f"Unknown engine: {engine}")

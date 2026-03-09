@@ -1,4 +1,5 @@
 .env
+dispatchers.json
 dispatchers.local.json
 .claude/
 .opencode/node_modules/

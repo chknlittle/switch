@@ -99,13 +99,13 @@ class _DispatchSendBot(BaseXMPPBot):
         self.add_event_handler("failed_auth", self.on_failed_auth)
 
     def on_failed_auth(self, event):
-        pass
+        self.disconnect(wait=False)
 
     async def on_start(self, event):
         self.send_presence()
+        await self.get_roster()
         self.send_reply(self.message)
-        await asyncio.sleep(1.5)
-        self.disconnect()
+        self.disconnect(wait=True)
 
 
 def _default_dispatcher_name() -> str:

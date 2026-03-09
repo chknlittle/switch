@@ -51,7 +51,6 @@ class Session:
     claude_session_id: str | None
     opencode_session_id: str | None
     pi_session_id: str | None
-    weaver_session_id: str | None
     active_engine: str
     model_id: str | None
     reasoning_mode: str
@@ -116,9 +115,32 @@ class DelegationTask:
 class SessionRepository:
     """Repository for sessions table."""
 
+    _UPDATABLE_COLUMNS = {
+        "active_engine",
+        "claude_session_id",
+        "last_active",
+        "model_id",
+        "opencode_session_id",
+        "pi_session_id",
+        "reasoning_mode",
+        "status",
+    }
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self._write_lock = _shared_write_lock(conn)
+
+    async def _update_session_column(
+        self, name: str, column: str, value: object | None
+    ) -> None:
+        if column not in self._UPDATABLE_COLUMNS:
+            raise ValueError(f"Unsupported session column update: {column}")
+        async with self._write_lock:
+            self.conn.execute(
+                f"UPDATE sessions SET {column} = ? WHERE name = ?",
+                (value, name),
+            )
+            self.conn.commit()
 
     def _row_to_session(self, row: sqlite3.Row) -> Session:
         return Session(
@@ -129,12 +151,15 @@ class SessionRepository:
             opencode_session_id=row["opencode_session_id"]
             if "opencode_session_id" in row.keys()
             else None,
-            pi_session_id=row["pi_session_id"] if "pi_session_id" in row.keys() else None,
-            weaver_session_id=row["weaver_session_id"] if "weaver_session_id" in row.keys() else None,
+            pi_session_id=row["pi_session_id"]
+            if "pi_session_id" in row.keys()
+            else None,
             active_engine=row["active_engine"] or "pi",
             model_id=row["model_id"] or None,
             reasoning_mode=row["reasoning_mode"] or "normal",
-            opencode_agent=row["opencode_agent"] if "opencode_agent" in row.keys() else None,
+            opencode_agent=row["opencode_agent"]
+            if "opencode_agent" in row.keys()
+            else None,
             dispatcher_jid=row["dispatcher_jid"]
             if "dispatcher_jid" in row.keys()
             else None,
@@ -204,7 +229,9 @@ class SessionRepository:
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
-    def list_active_recent_for_owner(self, owner_jid: str, limit: int = 50) -> list[Session]:
+    def list_active_recent_for_owner(
+        self, owner_jid: str, limit: int = 50
+    ) -> list[Session]:
         owner_bare = (owner_jid or "").split("/", 1)[0]
         rows = self.conn.execute(
             """SELECT * FROM sessions
@@ -266,6 +293,7 @@ class SessionRepository:
         model_id: str | None = None,
         active_engine: str = "pi",
         reasoning_mode: str = "normal",
+        opencode_agent: str | None = None,
         dispatcher_jid: str | None = None,
         owner_jid: str | None = None,
         room_jid: str | None = None,
@@ -277,8 +305,8 @@ class SessionRepository:
             self.conn.execute(
                 """INSERT INTO sessions
                    (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                    model_id, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    model_id, active_engine, reasoning_mode, opencode_agent, dispatcher_jid, owner_jid, room_jid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     name,
                     xmpp_jid,
@@ -289,6 +317,7 @@ class SessionRepository:
                     model_id,
                     active_engine,
                     reasoning_mode,
+                    opencode_agent,
                     dispatcher_jid,
                     owner_bare,
                     room_bare,
@@ -301,104 +330,43 @@ class SessionRepository:
         return created
 
     async def update_last_active(self, name: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET last_active = ? WHERE name = ?",
-                (datetime.now().isoformat(), name),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "last_active", datetime.now().isoformat())
 
     async def update_engine(self, name: str, engine: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET active_engine = ? WHERE name = ?",
-                (engine, name),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "active_engine", engine)
 
     async def update_reasoning_mode(self, name: str, mode: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET reasoning_mode = ? WHERE name = ?",
-                (mode, name),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "reasoning_mode", mode)
 
     async def update_model(self, name: str, model_id: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET model_id = ? WHERE name = ?",
-                (model_id, name),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "model_id", model_id)
 
     async def update_claude_session_id(self, name: str, session_id: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET claude_session_id = ? WHERE name = ?",
-                (session_id, name),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "claude_session_id", session_id)
 
     async def update_opencode_session_id(self, name: str, session_id: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET opencode_session_id = ? WHERE name = ?",
-                (session_id, name),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "opencode_session_id", session_id)
 
     async def update_pi_session_id(self, name: str, session_id: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET pi_session_id = ? WHERE name = ?",
-                (session_id, name),
-            )
-            self.conn.commit()
-
-    async def update_weaver_session_id(self, name: str, session_id: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET weaver_session_id = ? WHERE name = ?",
-                (session_id, name),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "pi_session_id", session_id)
 
     async def reset_claude_session(self, name: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET claude_session_id = NULL WHERE name = ?",
-                (name,),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "claude_session_id", None)
 
     async def reset_opencode_session(self, name: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET opencode_session_id = NULL WHERE name = ?",
-                (name,),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "opencode_session_id", None)
 
     async def reset_pi_session(self, name: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET pi_session_id = NULL WHERE name = ?",
-                (name,),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "pi_session_id", None)
 
     async def close(self, name: str) -> None:
-        async with self._write_lock:
-            self.conn.execute(
-                "UPDATE sessions SET status = 'closed' WHERE name = ?",
-                (name,),
-            )
-            self.conn.commit()
+        await self._update_session_column(name, "status", "closed")
 
     async def delete(self, name: str) -> None:
         async with self._write_lock:
-            self.conn.execute("DELETE FROM session_messages WHERE session_name = ?", (name,))
+            self.conn.execute(
+                "DELETE FROM session_messages WHERE session_name = ?", (name,)
+            )
             self.conn.execute("DELETE FROM ralph_loops WHERE session_name = ?", (name,))
             self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
             self.conn.commit()
@@ -799,7 +767,6 @@ def init_db() -> sqlite3.Connection:
         ("owner_jid", "TEXT"),
         ("room_jid", "TEXT"),
         ("pi_session_id", "TEXT"),
-        ("weaver_session_id", "TEXT"),
     ]
     existing_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()

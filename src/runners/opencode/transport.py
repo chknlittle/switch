@@ -24,14 +24,20 @@ class OpenCodeTransport:
         self._client_session: aiohttp.ClientSession | None = None
         self._active_session_id: str | None = None
         self._cancelled = False
+        self._cancel_event = asyncio.Event()
         self._abort_task: asyncio.Task | None = None
 
     @property
     def cancelled(self) -> bool:
         return self._cancelled
 
+    @property
+    def cancel_event(self) -> asyncio.Event:
+        return self._cancel_event
+
     def cancel(self) -> None:
         self._cancelled = True
+        self._cancel_event.set()
         if (
             self._client_session
             and self._active_session_id
@@ -54,7 +60,9 @@ class OpenCodeTransport:
                 if "connector is closed" in msg or "server disconnected" in msg:
                     log.debug(f"OpenCode abort task ended during shutdown: {e}")
                 else:
-                    log.warning(f"OpenCode abort task failed during wait_cancelled: {e}")
+                    log.warning(
+                        f"OpenCode abort task failed during wait_cancelled: {e}"
+                    )
 
     async def start_session(
         self,
@@ -166,6 +174,7 @@ class OpenCodeTransport:
         """
 
         self._cancelled = True
+        self._cancel_event.set()
 
         if sse_task:
             sse_task.cancel()
@@ -209,7 +218,9 @@ class OpenCodeTransport:
             except Exception as e:
                 msg = str(e).lower()
                 if "connector is closed" in msg or "server disconnected" in msg:
-                    log.debug(f"OpenCode abort during cleanup ended after disconnect: {e}")
+                    log.debug(
+                        f"OpenCode abort during cleanup ended after disconnect: {e}"
+                    )
                 else:
                     log.warning(f"OpenCode abort failed during cleanup: {e}")
 

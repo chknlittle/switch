@@ -232,6 +232,9 @@ class VoiceCallManager:
 
     async def _on_transport_info(self, iq: Any) -> None:
         """Handle trickle ICE candidates."""
+        if not self._is_authorized_sender(iq):
+            log.warning("Ignoring transport-info from unauthorized sender: %s", iq["from"])
+            return
         reply = build_iq_result(iq)
         reply.send()
 
@@ -253,6 +256,9 @@ class VoiceCallManager:
 
     async def _on_session_terminate(self, iq: Any) -> None:
         """Handle remote hangup."""
+        if not self._is_authorized_sender(iq):
+            log.warning("Ignoring session-terminate from unauthorized sender: %s", iq["from"])
+            return
         reply = build_iq_result(iq)
         reply.send()
 
@@ -371,6 +377,10 @@ class VoiceCallManager:
             term_iq.send()
         except Exception:
             log.debug("Failed to send session-terminate", exc_info=True)
+
+    def _is_authorized_sender(self, iq: Any) -> bool:
+        expected = getattr(self._bot, "xmpp_recipient", "") or ""
+        return str(iq["from"].bare) == str(expected).split("/", 1)[0]
 
     async def _cleanup_call(self, sid: str) -> None:
         """Clean up a single call's resources."""

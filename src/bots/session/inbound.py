@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import re
 
 log = logging.getLogger(__name__)
@@ -29,7 +30,10 @@ def extract_switch_meta(
         if payload is not None and (payload.get("format") or "").lower() == "json":
             raw = (payload.text or "").strip()
             if raw:
-                payload_obj = json.loads(raw)
+                try:
+                    payload_obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    log.warning("Ignoring malformed Switch meta JSON payload")
 
         return meta_type, attrs, payload_obj
 
@@ -80,6 +84,11 @@ def extract_bob_images(msg) -> list[tuple[str, bytes, str | None]]:
 
     out: list[tuple[str, bytes, str | None]] = []
     seen_cids: set[str] = set()
+    try:
+        max_bytes = int(os.getenv("SWITCH_ATTACHMENT_MAX_BYTES", str(10 * 1024 * 1024)))
+    except ValueError:
+        max_bytes = 10 * 1024 * 1024
+    max_b64_len = ((max_bytes + 2) // 3) * 4
 
     try:
         for el in getattr(msg, "xml", []) or []:
@@ -98,12 +107,18 @@ def extract_bob_images(msg) -> list[tuple[str, bytes, str | None]]:
                 raw = (getattr(child, "text", None) or "").strip()
                 if not raw:
                     continue
+                if len(raw) > max_b64_len:
+                    log.warning("Skipping oversized BOB payload cid=%s", cid or "<none>")
+                    continue
 
                 try:
-                    data = base64.b64decode(raw.encode("utf-8"), validate=False)
+                    data = base64.b64decode(raw.encode("utf-8"), validate=True)
                 except Exception:
                     continue
                 if not data:
+                    continue
+                if len(data) > max_bytes:
+                    log.warning("Skipping decoded oversized BOB payload cid=%s", cid or "<none>")
                     continue
 
                 if cid:

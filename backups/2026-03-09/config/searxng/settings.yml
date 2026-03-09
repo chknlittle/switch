@@ -1,0 +1,11 @@
+use_default_settings: true
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "switch-searxng-local"
+  bind_address: "0.0.0.0"
+  port: 8080

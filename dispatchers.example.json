@@ -107,29 +107,12 @@
     "label": "EpsteinLM 8B FP16"
   },
   {
-    "name": "oc",
-    "jid": "oc@localhost",
+    "name": "epstein-lora",
+    "jid": "epstein-lora@your.xmpp.server",
     "password_env": "XMPP_PASSWORD",
-    "engine": "pi",
-    "agent": "bridge",
-    "model_id": "",
-    "label": "Qwen 122B"
-  },
-  {
-    "name": "loom",
-    "jid": "loom@localhost",
-    "password_env": "LOOM_PASSWORD",
-    "engine": "pi",
-    "agent": "bridge",
-    "model_id": "local-llama/glm-4.7-flash-heretic.Q8_0.gguf",
-    "label": "GLM 4.7 Flash"
-  },
-  {
-    "name": "weaver",
-    "jid": "weaver@localhost",
-    "password_env": "XMPP_PASSWORD",
-    "engine": "weaver",
+    "engine": "vllm-direct",
     "agent": null,
-    "label": "Weaver Research"
+    "model_id": "epstein-qwen35-9b-lora-run1",
+    "label": "Epstein Qwen3.5 9B LoRA"
   }
 ]

@@ -50,7 +50,6 @@ from src.helpers import (
 from src.runners import Runner, create_runner
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
-from src.runners.weaver.config import WeaverConfig
 from src.attachments import Attachment, AttachmentStore
 from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
 from slixmpp.xmlstream import ET
@@ -124,9 +123,13 @@ class SessionBot(BaseXMPPBot):
         # Voice call support (Jingle + faster-whisper), gated by env flag.
         self._voice: VoiceCallManager | None = None
         if os.getenv("SWITCH_VOICE_ENABLED", "0").strip().lower() in {
-            "1", "true", "yes", "on",
+            "1",
+            "true",
+            "yes",
+            "on",
         }:
             from src.voice import VoiceCallManager as _VCM
+
             self._voice = _VCM(self, session=self.session)
 
         self.register_plugin("xep_0045")
@@ -160,9 +163,6 @@ class SessionBot(BaseXMPPBot):
                     meta_attrs=event.meta_attrs,
                     meta_payload=event.meta_payload,
                 )
-                # Tool/progress messages often clear typing indicators.
-                if event.meta_type == "tool":
-                    self._bot._typing.maybe_send(min_interval_s=5.0)
                 return
 
     class _SessionsAdapter(SessionStorePort):
@@ -179,9 +179,9 @@ class SessionBot(BaseXMPPBot):
                 claude_session_id=s.claude_session_id,
                 opencode_session_id=s.opencode_session_id,
                 pi_session_id=s.pi_session_id,
-                weaver_session_id=s.weaver_session_id,
                 model_id=s.model_id,
                 reasoning_mode=s.reasoning_mode,
+                opencode_agent=s.opencode_agent,
             )
 
         async def update_last_active(self, name: str) -> None:
@@ -196,14 +196,14 @@ class SessionBot(BaseXMPPBot):
         async def update_opencode_session_id(self, name: str, session_id: str) -> None:
             await self._repo.update_opencode_session_id(name, session_id)
 
-        async def update_weaver_session_id(self, name: str, session_id: str) -> None:
-            await self._repo.update_weaver_session_id(name, session_id)
 
     class _MessagesAdapter(MessageStorePort):
         def __init__(self, repo: MessageRepository):
             self._repo = repo
 
-        async def add(self, session_name: str, role: str, content: str, engine: str) -> None:
+        async def add(
+            self, session_name: str, role: str, content: str, engine: str
+        ) -> None:
             await self._repo.add(session_name, role, content, engine)
 
     class _RunnerFactoryAdapter(RunnerFactoryPort):
@@ -216,7 +216,6 @@ class SessionBot(BaseXMPPBot):
             session_name: str,
             pi_config: PiConfig | None = None,
             opencode_config: OpenCodeConfig | None = None,
-            weaver_config: WeaverConfig | None = None,
         ) -> Runner:
             return create_runner(
                 engine,
@@ -225,7 +224,6 @@ class SessionBot(BaseXMPPBot):
                 session_name=session_name,
                 pi_config=pi_config,
                 opencode_config=opencode_config,
-                weaver_config=weaver_config,
             )
 
     class _HistoryAdapter(HistoryPort):
@@ -275,7 +273,9 @@ class SessionBot(BaseXMPPBot):
             total_cost: float,
             status: str = "running",
         ) -> None:
-            await self._repo.update_progress(loop_id, current_iteration, total_cost, status)
+            await self._repo.update_progress(
+                loop_id, current_iteration, total_cost, status
+            )
 
     def _build_runtime(self) -> SessionRuntime:
         return SessionRuntime(
@@ -328,7 +328,8 @@ class SessionBot(BaseXMPPBot):
         try:
             await asyncio.wait_for(self.get_roster(), timeout=15)
             await asyncio.wait_for(
-                self["xep_0280"].enable(), timeout=15  # type: ignore[attr-defined,union-attr]
+                self["xep_0280"].enable(),
+                timeout=15,  # type: ignore[attr-defined,union-attr]
             )
         except asyncio.TimeoutError:
             self.startup_error = "XMPP startup timed out (roster/carbons)"
@@ -371,7 +372,9 @@ class SessionBot(BaseXMPPBot):
             delay = min(_BASE_DELAY * (2 ** (self._reconnect_attempt - 1)), _MAX_DELAY)
             self.log.warning(
                 "Reconnecting (attempt %d/%d) in %ds...",
-                self._reconnect_attempt, _MAX_ATTEMPTS, delay,
+                self._reconnect_attempt,
+                _MAX_ATTEMPTS,
+                delay,
             )
             await asyncio.sleep(delay)
             if self.shutting_down:
@@ -669,9 +672,7 @@ class SessionBot(BaseXMPPBot):
             "SWITCH_VLLM_HEALTH_URL", "http://127.0.0.1:8027/v1/models"
         )
         pause_url = os.getenv("SWITCH_VLLM_PAUSE_URL", "http://127.0.0.1:8027/pause")
-        resume_url = os.getenv(
-            "SWITCH_VLLM_RESUME_URL", "http://127.0.0.1:8027/resume"
-        )
+        resume_url = os.getenv("SWITCH_VLLM_RESUME_URL", "http://127.0.0.1:8027/resume")
 
         try:
             timeout_s = float(os.getenv("SWITCH_VLLM_HARD_CANCEL_TIMEOUT_S", "90"))
@@ -745,7 +746,9 @@ class SessionBot(BaseXMPPBot):
             try:
                 await self._voice.shutdown()
             except Exception:
-                self.log.warning("Voice shutdown failed during hard_kill", exc_info=True)
+                self.log.warning(
+                    "Voice shutdown failed during hard_kill", exc_info=True
+                )
 
         self._runtime.shutdown()
 
@@ -868,6 +871,11 @@ class SessionBot(BaseXMPPBot):
             self._send_attachment_meta(attachments)
 
         if meta_type == "question-reply":
+            if trusted_peer:
+                self.log.warning(
+                    "Ignoring question reply from trusted peer session: %s", sender
+                )
+                return
             request_id = (meta_attrs or {}).get("request_id")
             answer_obj: object | None = None
             if isinstance(meta_payload, dict):
@@ -891,13 +899,20 @@ class SessionBot(BaseXMPPBot):
         self.log.info(f"Message{'[scheduled]' if is_scheduled else ''}: {body[:50]}...")
 
         # Commands only from user
+        if trusted_peer and body.startswith("/"):
+            self.log.warning(
+                "Ignoring slash command from trusted peer session: %s", sender
+            )
+            return
         if not is_scheduled and await self.commands.handle(body):
             return
 
         # Shell commands — only session owner or collaborators may execute.
         if body.startswith("!"):
             if not self._is_shell_authorized(msg):
-                self.send_reply("Shell commands are restricted to the session owner and collaborators.")
+                self.send_reply(
+                    "Shell commands are restricted to the session owner and collaborators."
+                )
                 return
             await self.run_shell_command(body[1:].strip())
             return
@@ -976,7 +991,9 @@ class SessionBot(BaseXMPPBot):
             body_for_history = self._PromptAdapter().augment_prompt(
                 body, list(attachments or [])
             )
-            append_to_history(body_for_history, self.working_dir, session.claude_session_id)
+            append_to_history(
+                body_for_history, self.working_dir, session.claude_session_id
+            )
             log_activity(body, session=self.session_name, source="xmpp")
             await self.messages.add(
                 self.session_name,
@@ -1025,7 +1042,9 @@ class SessionBot(BaseXMPPBot):
 
         cfg = dispatchers.get(intent.dispatcher_name)
         if not cfg:
-            self.send_reply(f"Delegation failed: unknown dispatcher '{intent.dispatcher_name}'.")
+            self.send_reply(
+                f"Delegation failed: unknown dispatcher '{intent.dispatcher_name}'."
+            )
             return True
 
         dispatcher_jid = str(cfg.get("jid") or "").strip()
@@ -1065,7 +1084,9 @@ class SessionBot(BaseXMPPBot):
         poll_s = float(os.getenv("SWITCH_DELEGATE_POLL_INTERVAL_S", "1.0") or "1.0")
 
         async def _send_via_current_session(envelope: str) -> None:
-            self.send_message(mto=cast(Any, dispatcher_jid), mbody=envelope, mtype="chat")
+            self.send_message(
+                mto=cast(Any, dispatcher_jid), mbody=envelope, mtype="chat"
+            )
 
         try:
             result = await delegate_once(
@@ -1268,9 +1289,7 @@ class SessionBot(BaseXMPPBot):
                 with suppress(Exception):
                     await asyncio.wait_for(proc.wait(), timeout=2)
             self.send_reply(f"$ {cmd}\n(timed out after 30s — process killed)")
-            context_msg = (
-                f"[Shell command `{cmd}` timed out after 30s and was killed]"
-            )
+            context_msg = f"[Shell command `{cmd}` timed out after 30s and was killed]"
             await self.process_message(context_msg, trigger_response=False)
             return
         output = stdout.decode("utf-8", errors="replace").strip() or "(no output)"
