@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
+from src.runners.weaver.config import WeaverConfig
 
 if TYPE_CHECKING:
     from src.runners.ports import Runner
@@ -24,6 +25,7 @@ def create_runner(
     session_name: str | None = None,
     pi_config: PiConfig | None = None,
     opencode_config: OpenCodeConfig | None = None,
+    weaver_config: WeaverConfig | None = None,
 ) -> Runner:
     engine = (engine or "").strip().lower()
 
@@ -49,6 +51,16 @@ def create_runner(
             output_dir,
             session_name,
             config=opencode_config,
+        )
+
+    if engine == "weaver":
+        from src.runners.weaver.runner import WeaverRunner
+
+        return WeaverRunner(
+            working_dir,
+            output_dir,
+            session_name,
+            config=weaver_config,
         )
 
     raise ValueError(f"Unknown engine: {engine}")

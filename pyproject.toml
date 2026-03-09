@@ -7,6 +7,9 @@ dependencies = [
     "slixmpp>=1.8.0",
     "aiohttp>=3.9.0",
     "setuptools==68.0.0",
+    "graphiti-core>=0.28.1",
+    "openai>=2.26.0",
+    "playwright>=1.40.0",
 ]
 
 [project.optional-dependencies]

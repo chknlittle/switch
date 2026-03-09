@@ -23,6 +23,7 @@ from src.attachments import Attachment
 from src.runners import Question, Runner
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
+from src.runners.weaver.config import WeaverConfig
 
 from src.core.session_runtime.api import (
     EventSinkPort,
@@ -902,7 +903,7 @@ class SessionRuntime:
     ) -> "SessionRuntime._RalphIterationResult":
         result = SessionRuntime._RalphIterationResult()
         engine = (cfg.force_engine or session.active_engine or "pi").strip().lower()
-        if engine not in {"claude", "pi", "opencode"}:
+        if engine not in {"claude", "pi", "opencode", "weaver"}:
             log.warning("Ralph: engine %r not supported, falling back to pi", engine)
             engine = "pi"
 
@@ -1007,6 +1008,14 @@ class SessionRuntime:
                 session_name=self.session_name,
                 pi_config=pi_config or PiConfig(model=session.model_id or None),
             )
+        elif engine == "weaver":
+            self.runner = self._runner_factory.create(
+                "weaver",
+                working_dir=self.working_dir,
+                output_dir=self.output_dir,
+                session_name=self.session_name,
+                weaver_config=WeaverConfig.from_env(),
+            )
         else:
             raise ValueError(f"Unknown engine: {engine}")
 
@@ -1018,6 +1027,8 @@ class SessionRuntime:
             return session.opencode_session_id
         if engine == "pi":
             return session.pi_session_id
+        if engine == "weaver":
+            return session.weaver_session_id
         return None
 
     async def _save_session_id(self, engine: str, session_id: str) -> None:
@@ -1029,11 +1040,13 @@ class SessionRuntime:
             )
         elif engine == "pi":
             await self._sessions.update_pi_session_id(self.session_name, session_id)
+        elif engine == "weaver":
+            await self._sessions.update_weaver_session_id(self.session_name, session_id)
 
     async def _run_engine(
         self, *, engine: str, session: SessionState, prompt: str
     ) -> None:
-        if engine not in {"claude", "pi", "opencode"}:
+        if engine not in {"claude", "pi", "opencode", "weaver"}:
             await self._emit(OutboundMessage(f"Unknown engine '{engine}'."))
             return
         await self._run_engine_generic(engine, session, prompt)

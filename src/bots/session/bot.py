@@ -50,6 +50,7 @@ from src.helpers import (
 from src.runners import Runner, create_runner
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
+from src.runners.weaver.config import WeaverConfig
 from src.attachments import Attachment, AttachmentStore
 from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
 from slixmpp.xmlstream import ET
@@ -178,6 +179,7 @@ class SessionBot(BaseXMPPBot):
                 claude_session_id=s.claude_session_id,
                 opencode_session_id=s.opencode_session_id,
                 pi_session_id=s.pi_session_id,
+                weaver_session_id=s.weaver_session_id,
                 model_id=s.model_id,
                 reasoning_mode=s.reasoning_mode,
             )
@@ -193,6 +195,9 @@ class SessionBot(BaseXMPPBot):
 
         async def update_opencode_session_id(self, name: str, session_id: str) -> None:
             await self._repo.update_opencode_session_id(name, session_id)
+
+        async def update_weaver_session_id(self, name: str, session_id: str) -> None:
+            await self._repo.update_weaver_session_id(name, session_id)
 
     class _MessagesAdapter(MessageStorePort):
         def __init__(self, repo: MessageRepository):
@@ -211,6 +216,7 @@ class SessionBot(BaseXMPPBot):
             session_name: str,
             pi_config: PiConfig | None = None,
             opencode_config: OpenCodeConfig | None = None,
+            weaver_config: WeaverConfig | None = None,
         ) -> Runner:
             return create_runner(
                 engine,
@@ -219,6 +225,7 @@ class SessionBot(BaseXMPPBot):
                 session_name=session_name,
                 pi_config=pi_config,
                 opencode_config=opencode_config,
+                weaver_config=weaver_config,
             )
 
     class _HistoryAdapter(HistoryPort):

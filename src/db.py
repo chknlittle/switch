@@ -51,6 +51,7 @@ class Session:
     claude_session_id: str | None
     opencode_session_id: str | None
     pi_session_id: str | None
+    weaver_session_id: str | None
     active_engine: str
     model_id: str | None
     reasoning_mode: str
@@ -129,6 +130,7 @@ class SessionRepository:
             if "opencode_session_id" in row.keys()
             else None,
             pi_session_id=row["pi_session_id"] if "pi_session_id" in row.keys() else None,
+            weaver_session_id=row["weaver_session_id"] if "weaver_session_id" in row.keys() else None,
             active_engine=row["active_engine"] or "pi",
             model_id=row["model_id"] or None,
             reasoning_mode=row["reasoning_mode"] or "normal",
@@ -350,6 +352,14 @@ class SessionRepository:
         async with self._write_lock:
             self.conn.execute(
                 "UPDATE sessions SET pi_session_id = ? WHERE name = ?",
+                (session_id, name),
+            )
+            self.conn.commit()
+
+    async def update_weaver_session_id(self, name: str, session_id: str) -> None:
+        async with self._write_lock:
+            self.conn.execute(
+                "UPDATE sessions SET weaver_session_id = ? WHERE name = ?",
                 (session_id, name),
             )
             self.conn.commit()
@@ -789,6 +799,7 @@ def init_db() -> sqlite3.Connection:
         ("owner_jid", "TEXT"),
         ("room_jid", "TEXT"),
         ("pi_session_id", "TEXT"),
+        ("weaver_session_id", "TEXT"),
     ]
     existing_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()

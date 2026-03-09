@@ -1,7 +1,7 @@
 [
   {
     "name": "acorn",
-    "jid": "acorn@your.xmpp.server",
+    "jid": "acorn@localhost",
     "password_env": "ACORN_PASSWORD",
     "engine": "external",
     "agent": null,
@@ -10,7 +10,7 @@
   },
   {
     "name": "oc-codex",
-    "jid": "oc-codex@your.xmpp.server",
+    "jid": "oc-codex@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-gpt",
@@ -19,7 +19,7 @@
   },
   {
     "name": "cc",
-    "jid": "cc@your.xmpp.server",
+    "jid": "cc@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "claude",
     "agent": null,
@@ -27,7 +27,7 @@
   },
   {
     "name": "oc-gpt",
-    "jid": "oc-gpt@your.xmpp.server",
+    "jid": "oc-gpt@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-gpt",
@@ -36,7 +36,7 @@
   },
   {
     "name": "qwen",
-    "jid": "qwen@your.xmpp.server",
+    "jid": "qwen@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-qwen",
@@ -45,7 +45,7 @@
   },
   {
     "name": "qwen-spark",
-    "jid": "qwen-spark@your.xmpp.server",
+    "jid": "qwen-spark@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-qwen-spark",
@@ -54,7 +54,7 @@
   },
   {
     "name": "oc-glm-zen",
-    "jid": "oc-glm-zen@your.xmpp.server",
+    "jid": "oc-glm-zen@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-zen",
@@ -63,7 +63,7 @@
   },
   {
     "name": "oc-gpt-or",
-    "jid": "oc-gpt-or@your.xmpp.server",
+    "jid": "oc-gpt-or@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-gpt-or",
@@ -72,7 +72,7 @@
   },
   {
     "name": "oc-gemini",
-    "jid": "oc-gemini@your.xmpp.server",
+    "jid": "oc-gemini@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-gemini",
@@ -81,7 +81,7 @@
   },
   {
     "name": "oc-kimi-coding",
-    "jid": "oc-kimi-coding@your.xmpp.server",
+    "jid": "oc-kimi-coding@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-kimi-coding",
@@ -90,7 +90,7 @@
   },
   {
     "name": "heretic",
-    "jid": "heretic@your.xmpp.server",
+    "jid": "heretic@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-heretic",
@@ -99,11 +99,37 @@
   },
   {
     "name": "epstein",
-    "jid": "epstein@your.xmpp.server",
+    "jid": "epstein@localhost",
     "password_env": "XMPP_PASSWORD",
     "engine": "opencode",
     "agent": "bridge-epstein",
     "model_id": "alphakek-epsteinLM-synth-2602-ckpt4",
     "label": "EpsteinLM 8B FP16"
+  },
+  {
+    "name": "oc",
+    "jid": "oc@localhost",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "pi",
+    "agent": "bridge",
+    "model_id": "",
+    "label": "Qwen 122B"
+  },
+  {
+    "name": "loom",
+    "jid": "loom@localhost",
+    "password_env": "LOOM_PASSWORD",
+    "engine": "pi",
+    "agent": "bridge",
+    "model_id": "local-llama/glm-4.7-flash-heretic.Q8_0.gguf",
+    "label": "GLM 4.7 Flash"
+  },
+  {
+    "name": "weaver",
+    "jid": "weaver@localhost",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "weaver",
+    "agent": null,
+    "label": "Weaver Research"
   }
 ]
