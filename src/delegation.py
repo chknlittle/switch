@@ -120,6 +120,24 @@ def _default_delegate_dispatcher() -> str:
     ).strip() or "oc-codex"
 
 
+async def _poll_until(
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+    step: Callable[[], object | None],
+) -> object | None:
+    deadline = time.monotonic() + max(5.0, float(timeout_s or 0.0))
+    poll_interval = max(0.1, float(poll_interval_s or 1.0))
+
+    while time.monotonic() < deadline:
+        result = step()
+        if result is not None:
+            return result
+        await asyncio.sleep(poll_interval)
+
+    return None
+
+
 def resolve_dispatcher_name(raw: str | None, known: set[str]) -> str | None:
     token = (raw or "").strip().lower()
     if not token:
@@ -321,46 +339,55 @@ async def delegate_once(
             body=envelope,
         )
 
-    deadline = time.monotonic() + max(5.0, float(timeout_s or 0.0))
-    poll_interval = max(0.1, float(poll_interval_s or 1.0))
     session_name: str | None = None
     user_message_id: int | None = None
 
-    while time.monotonic() < deadline:
+    def _find_spawned_session() -> tuple[str, int] | None:
         conn.commit()
-        session_ref = find_spawned_session_for_token(
+        return find_spawned_session_for_token(
             conn,
             dispatcher_jid=dispatcher_jid,
             token=token,
             min_message_id=min_message_id,
         )
-        if session_ref:
-            session_name, user_message_id = session_ref
-            if on_spawned is not None:
-                try:
-                    on_spawned(session_name, user_message_id)
-                except Exception:
-                    pass
-            break
-        await asyncio.sleep(poll_interval)
+
+    session_ref = await _poll_until(
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+        step=_find_spawned_session,
+    )
+    if session_ref:
+        session_name, user_message_id = session_ref
+        if on_spawned is not None:
+            try:
+                on_spawned(session_name, user_message_id)
+            except Exception:
+                pass
 
     if not session_name or user_message_id is None:
         raise TimeoutError("timed out waiting for delegated session creation")
 
-    while time.monotonic() < deadline:
+    def _find_reply() -> tuple[str, int] | None:
         conn.commit()
-        reply = find_assistant_reply(
-            conn, session_name=session_name, after_id=user_message_id
+        return find_assistant_reply(
+            conn,
+            session_name=session_name,
+            after_id=user_message_id,
         )
-        if reply:
-            content, reply_id = reply
-            return DelegationResult(
-                token=token,
-                session_name=session_name,
-                user_message_id=user_message_id,
-                assistant_message_id=reply_id,
-                content=content.strip(),
-            )
-        await asyncio.sleep(poll_interval)
+
+    reply = await _poll_until(
+        timeout_s=timeout_s,
+        poll_interval_s=poll_interval_s,
+        step=_find_reply,
+    )
+    if reply:
+        content, reply_id = reply
+        return DelegationResult(
+            token=token,
+            session_name=session_name,
+            user_message_id=user_message_id,
+            assistant_message_id=reply_id,
+            content=content.strip(),
+        )
 
     raise TimeoutError(f"timed out waiting for delegated answer from {session_name}")
