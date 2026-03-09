@@ -51,4 +51,19 @@ def create_runner(
             config=opencode_config,
         )
 
+    if engine == "vllm-direct":
+        from src.runners.vllm_direct.runner import VLLMDirectRunner
+
+        model = None
+        if opencode_config and opencode_config.model:
+            model = opencode_config.model
+        elif pi_config and pi_config.model:
+            model = pi_config.model
+        return VLLMDirectRunner(
+            working_dir,
+            output_dir,
+            session_name,
+            model=model,
+        )
+
     raise ValueError(f"Unknown engine: {engine}")

@@ -128,11 +128,15 @@ class SessionRepository:
             opencode_session_id=row["opencode_session_id"]
             if "opencode_session_id" in row.keys()
             else None,
-            pi_session_id=row["pi_session_id"] if "pi_session_id" in row.keys() else None,
+            pi_session_id=row["pi_session_id"]
+            if "pi_session_id" in row.keys()
+            else None,
             active_engine=row["active_engine"] or "pi",
             model_id=row["model_id"] or None,
             reasoning_mode=row["reasoning_mode"] or "normal",
-            opencode_agent=row["opencode_agent"] if "opencode_agent" in row.keys() else None,
+            opencode_agent=row["opencode_agent"]
+            if "opencode_agent" in row.keys()
+            else None,
             dispatcher_jid=row["dispatcher_jid"]
             if "dispatcher_jid" in row.keys()
             else None,
@@ -202,7 +206,9 @@ class SessionRepository:
         ).fetchall()
         return [self._row_to_session(row) for row in rows]
 
-    def list_active_recent_for_owner(self, owner_jid: str, limit: int = 50) -> list[Session]:
+    def list_active_recent_for_owner(
+        self, owner_jid: str, limit: int = 50
+    ) -> list[Session]:
         owner_bare = (owner_jid or "").split("/", 1)[0]
         rows = self.conn.execute(
             """SELECT * FROM sessions
@@ -264,6 +270,7 @@ class SessionRepository:
         model_id: str | None = None,
         active_engine: str = "pi",
         reasoning_mode: str = "normal",
+        opencode_agent: str | None = None,
         dispatcher_jid: str | None = None,
         owner_jid: str | None = None,
         room_jid: str | None = None,
@@ -275,8 +282,8 @@ class SessionRepository:
             self.conn.execute(
                 """INSERT INTO sessions
                    (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                    model_id, active_engine, reasoning_mode, dispatcher_jid, owner_jid, room_jid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    model_id, active_engine, reasoning_mode, opencode_agent, dispatcher_jid, owner_jid, room_jid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     name,
                     xmpp_jid,
@@ -287,6 +294,7 @@ class SessionRepository:
                     model_id,
                     active_engine,
                     reasoning_mode,
+                    opencode_agent,
                     dispatcher_jid,
                     owner_bare,
                     room_bare,
@@ -388,7 +396,9 @@ class SessionRepository:
 
     async def delete(self, name: str) -> None:
         async with self._write_lock:
-            self.conn.execute("DELETE FROM session_messages WHERE session_name = ?", (name,))
+            self.conn.execute(
+                "DELETE FROM session_messages WHERE session_name = ?", (name,)
+            )
             self.conn.execute("DELETE FROM ralph_loops WHERE session_name = ?", (name,))
             self.conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
             self.conn.commit()

@@ -25,6 +25,7 @@ class SessionState:
     pi_session_id: str | None
     model_id: str | None
     reasoning_mode: str
+    opencode_agent: str | None
 
 
 class SessionStorePort(Protocol):
@@ -40,7 +41,9 @@ class SessionStorePort(Protocol):
 
 
 class MessageStorePort(Protocol):
-    async def add(self, session_name: str, role: str, content: str, engine: str) -> None: ...
+    async def add(
+        self, session_name: str, role: str, content: str, engine: str
+    ) -> None: ...
 
 
 class RunnerFactoryPort(Protocol):
@@ -57,7 +60,9 @@ class RunnerFactoryPort(Protocol):
 
 
 class HistoryPort(Protocol):
-    def append_to_history(self, message: str, working_dir: str, claude_session_id: str | None) -> None: ...
+    def append_to_history(
+        self, message: str, working_dir: str, claude_session_id: str | None
+    ) -> None: ...
 
     def log_activity(self, message: str, *, session: str, source: str) -> None: ...
 
@@ -67,7 +72,9 @@ class RunnerEventSinkPort(Protocol):
 
 
 class AttachmentPromptPort(Protocol):
-    def augment_prompt(self, body: str, attachments: list[Attachment] | None) -> str: ...
+    def augment_prompt(
+        self, body: str, attachments: list[Attachment] | None
+    ) -> str: ...
 
 
 class RalphLoopStorePort(Protocol):

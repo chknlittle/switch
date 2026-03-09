@@ -105,5 +105,14 @@
     "agent": "bridge-epstein",
     "model_id": "alphakek-epsteinLM-synth-2602-ckpt4",
     "label": "EpsteinLM 8B FP16"
+  },
+  {
+    "name": "epstein-lora",
+    "jid": "epstein-lora@your.xmpp.server",
+    "password_env": "XMPP_PASSWORD",
+    "engine": "vllm-direct",
+    "agent": null,
+    "model_id": "epstein-qwen35-9b-lora-run1",
+    "label": "Epstein Qwen3.5 9B LoRA"
   }
 ]

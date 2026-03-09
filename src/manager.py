@@ -134,6 +134,7 @@ class SessionManager:
                 manager=self,
                 engine=cfg["engine"],
                 model_id=cfg.get("model_id"),
+                agent=cfg.get("agent"),
                 label=cfg["label"],
             )
             dispatcher.connect_to_server(self.xmpp_server)
@@ -146,7 +147,7 @@ class SessionManager:
         for name, bot in list(self.session_bots.items()):
             try:
                 bot.cancel_operations(notify=False)
-                if hasattr(bot, '_runtime'):
+                if hasattr(bot, "_runtime"):
                     bot._runtime.shutdown()
                 bot.disconnect(wait=False)
             except Exception:

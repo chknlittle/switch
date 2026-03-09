@@ -220,6 +220,8 @@ class CommandHandler:
             await self.bot.sessions.reset_pi_session(self.bot.session_name)
         elif engine == "opencode":
             await self.bot.sessions.reset_opencode_session(self.bot.session_name)
+        elif engine == "vllm-direct":
+            pass
         else:
             self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
             return True
@@ -229,7 +231,7 @@ class CommandHandler:
     @command("/compact")
     async def compact(self, _body: str) -> bool:
         """Compact Pi's context window."""
-        runner = self.bot.session.runner
+        runner = cast(Any, self.bot.session).runner
         if not isinstance(runner, PiRunner):
             self.bot.send_reply("Not a Pi session — /compact only works with Pi.")
             return True

@@ -902,7 +902,7 @@ class SessionRuntime:
     ) -> "SessionRuntime._RalphIterationResult":
         result = SessionRuntime._RalphIterationResult()
         engine = (cfg.force_engine or session.active_engine or "pi").strip().lower()
-        if engine not in {"claude", "pi", "opencode"}:
+        if engine not in {"claude", "pi", "opencode", "vllm-direct"}:
             log.warning("Ralph: engine %r not supported, falling back to pi", engine)
             engine = "pi"
 
@@ -919,7 +919,10 @@ class SessionRuntime:
             accumulated = ""
             tool_summaries: list[str] = []
             last_progress_at = 0
-            async for event_type, content in self.runner.run(prompt, session_id):
+            runner = self.runner
+            if runner is None:
+                raise RuntimeError(f"Runner not initialized for engine '{engine}'")
+            async for event_type, content in runner.run(prompt, session_id):
                 if event_type == "session_id" and isinstance(content, str) and content:
                     if not cfg.prompt_only:
                         await self._save_session_id(engine, content)
@@ -961,9 +964,10 @@ class SessionRuntime:
         finally:
             runner_ref = self.runner
             self.runner = None
-            if runner_ref and hasattr(runner_ref, "cleanup"):
+            cleanup = getattr(runner_ref, "cleanup", None)
+            if callable(cleanup):
                 try:
-                    await runner_ref.cleanup()
+                    await cleanup()
                 except Exception:
                     log.warning("Runner cleanup failed", exc_info=True)
         return result
@@ -996,12 +1000,21 @@ class SessionRuntime:
                 opencode_config=OpenCodeConfig(
                     model=session.model_id or None,
                     reasoning_mode=session.reasoning_mode,
+                    agent=session.opencode_agent or "bridge",
                     question_callback=self._create_question_callback(engine="opencode"),
                 ),
             )
         elif engine == "pi":
             self.runner = self._runner_factory.create(
                 "pi",
+                working_dir=self.working_dir,
+                output_dir=self.output_dir,
+                session_name=self.session_name,
+                pi_config=pi_config or PiConfig(model=session.model_id or None),
+            )
+        elif engine == "vllm-direct":
+            self.runner = self._runner_factory.create(
+                "vllm-direct",
                 working_dir=self.working_dir,
                 output_dir=self.output_dir,
                 session_name=self.session_name,
@@ -1033,7 +1046,7 @@ class SessionRuntime:
     async def _run_engine(
         self, *, engine: str, session: SessionState, prompt: str
     ) -> None:
-        if engine not in {"claude", "pi", "opencode"}:
+        if engine not in {"claude", "pi", "opencode", "vllm-direct"}:
             await self._emit(OutboundMessage(f"Unknown engine '{engine}'."))
             return
         await self._run_engine_generic(engine, session, prompt)
@@ -1065,7 +1078,10 @@ class SessionRuntime:
         last_progress_at = 0
 
         try:
-            async for event_type, content in self.runner.run(prompt, session_id):
+            runner = self.runner
+            if runner is None:
+                raise RuntimeError(f"Runner not initialized for engine '{engine}'")
+            async for event_type, content in runner.run(prompt, session_id):
                 if self.shutting_down:
                     return
 
@@ -1105,9 +1121,10 @@ class SessionRuntime:
         finally:
             runner_ref = self.runner
             self.runner = None
-            if runner_ref and hasattr(runner_ref, "cleanup"):
+            cleanup = getattr(runner_ref, "cleanup", None)
+            if callable(cleanup):
                 try:
-                    await runner_ref.cleanup()
+                    await cleanup()
                 except Exception:
                     log.warning("Runner cleanup failed", exc_info=True)
 

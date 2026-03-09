@@ -70,6 +70,7 @@ async def create_session(
     *,
     engine: str = "pi",
     model_id: str | None = None,
+    opencode_agent: str | None = None,
     label: str | None = None,
     name_hint: str | None = None,
     announce: str | None = None,
@@ -124,7 +125,9 @@ async def create_session(
     room_jid: str | None = None
     collab_mode = len(collab_members) > 1
     if collab_mode:
-        muc_service = os.getenv("SWITCH_MUC_SERVICE", f"conference.{manager.xmpp_domain}")
+        muc_service = os.getenv(
+            "SWITCH_MUC_SERVICE", f"conference.{manager.xmpp_domain}"
+        )
         room_jid = f"{name}@{muc_service}".split("/", 1)[0]
 
     # Room-based collaborative sessions should not appear as direct 1:1 contacts.
@@ -154,6 +157,7 @@ async def create_session(
         tmux_name=name,
         model_id=model_id,
         active_engine=engine,
+        opencode_agent=opencode_agent,
         dispatcher_jid=dispatcher_jid,
         owner_jid=recipient,
         room_jid=room_jid,
@@ -221,7 +225,9 @@ async def _rollback_failed_create(
             bot.shutting_down = True
             bot.disconnect()
         except Exception:
-            _log.warning("Failed to disconnect bot during rollback for %s", name, exc_info=True)
+            _log.warning(
+                "Failed to disconnect bot during rollback for %s", name, exc_info=True
+            )
 
     try:
         delete_xmpp_account(
@@ -231,17 +237,23 @@ async def _rollback_failed_create(
             _log,
         )
     except Exception:
-        _log.warning("Failed to delete XMPP account during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to delete XMPP account during rollback for %s", name, exc_info=True
+        )
 
     try:
         kill_tmux_session(name)
     except Exception:
-        _log.warning("Failed to kill tmux session during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to kill tmux session during rollback for %s", name, exc_info=True
+        )
 
     try:
         await manager.sessions.delete(name)
     except Exception:
-        _log.warning("Failed to delete DB row during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to delete DB row during rollback for %s", name, exc_info=True
+        )
 
     if session_work_dir is not None:
         try:
@@ -258,7 +270,9 @@ async def _rollback_failed_create(
     try:
         manager.notify_directory_sessions_changed(dispatcher_jid=dispatcher_jid)
     except Exception:
-        _log.warning("Failed to notify directory during rollback for %s", name, exc_info=True)
+        _log.warning(
+            "Failed to notify directory during rollback for %s", name, exc_info=True
+        )
 
 
 async def kill_session(
