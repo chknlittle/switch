@@ -206,38 +206,33 @@ class PiRunner(BaseRunner):
         return None
 
     async def _read_events(
-        self, state: RunState, *, deadline: float = 0
+        self, state: RunState,
     ) -> AsyncIterator[Event]:
         if not self._process or not self._process.stdout:
             return
+
+        _started_at = asyncio.get_event_loop().time()
 
         while True:
             if self._cancelled:
                 break
 
-            # Per-read timeout: if we get no output for 120s the process is
-            # likely stuck.  Also respect the overall run deadline.
-            now = asyncio.get_event_loop().time()
-            if deadline and now > deadline:
-                log.warning("Pi run deadline reached during read")
-                self.cancel()
-                break
-            read_timeout = 120.0
-            if deadline:
-                read_timeout = min(read_timeout, deadline - now + 0.5)
+            # Use a generous per-read timeout.  If the model is thinking or
+            # executing a tool we don't want to kill the session — just warn.
+            read_timeout = 300.0
 
             try:
                 raw = await asyncio.wait_for(
                     self._process.stdout.readline(), timeout=read_timeout
                 )
             except asyncio.TimeoutError:
-                if deadline and asyncio.get_event_loop().time() >= deadline:
-                    log.warning("Pi run deadline reached (no output)")
-                    self.cancel()
+                if self._is_alive():
+                    elapsed = int(asyncio.get_event_loop().time() - _started_at)
+                    log.warning("Pi produced no output for %ds — still waiting", elapsed)
+                    continue
                 else:
-                    log.warning("Pi produced no output for %.0fs, cancelling", read_timeout)
-                    self.cancel()
-                break
+                    log.warning("Pi process exited while waiting for output")
+                    break
             except asyncio.CancelledError:
                 break
 
@@ -308,16 +303,14 @@ class PiRunner(BaseRunner):
             # Send the prompt.
             await self._send({"type": "prompt", "message": prompt})
 
-            # Stream events with overall run deadline and per-read timeout.
-            run_deadline = asyncio.get_event_loop().time() + self._config.run_timeout
-            async for event in self._read_events(state, deadline=run_deadline):
+            # Stream events — no hard deadline; timeouts warn instead of killing.
+            async for event in self._read_events(state):
                 yield event
 
-            if self._cancelled:
-                yield ("cancelled", None)
-                return
+            was_cancelled = self._cancelled
 
-            # Fetch session stats before closing.
+            # Always try to grab session stats so the session_id is saved
+            # for resume — even if we were cancelled.
             stats: dict | None = None
             if self._is_alive() and self._process.stdin and not self._process.stdin.is_closing():
                 try:
@@ -334,7 +327,6 @@ class PiRunner(BaseRunner):
 
             # Stats data is nested under "data" key.
             stats_data = stats.get("data", {}) if isinstance(stats, dict) else {}
-            result = self._processor.make_result(state, stats_data)
 
             # Extract session path from stats for resume.
             session_path = None
@@ -363,6 +355,11 @@ class PiRunner(BaseRunner):
                     "present" if stats else "None",
                 )
 
+            if was_cancelled:
+                yield ("cancelled", None)
+                return
+
+            result = self._processor.make_result(state, stats_data)
             yield ("result", result)
 
         except Exception as e:

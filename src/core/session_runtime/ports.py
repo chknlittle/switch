@@ -39,7 +39,6 @@ class SessionStorePort(Protocol):
 
     async def update_pi_session_id(self, name: str, session_id: str) -> None: ...
 
-
 class MessageStorePort(Protocol):
     async def add(
         self, session_name: str, role: str, content: str, engine: str

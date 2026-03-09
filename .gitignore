@@ -34,6 +34,14 @@ certs/
 src/sessions.db
 src/output/
 
+# Local backups, config, and external modules
+backups/
+config/
+docker-compose.weaver.yml
+switch.db
+md
+src/runners/weaver/
+
 # Local scratch/vendor dirs (not part of Switch runtime)
 Sources/
 __pycache__/
