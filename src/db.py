@@ -405,18 +405,6 @@ class SessionRepository:
     async def update_model(self, name: str, model_id: str) -> None:
         await self._update_session_column(name, "model_id", model_id)
 
-    async def update_claude_session_id(self, name: str, session_id: str) -> None:
-        await self._update_session_column(name, "claude_session_id", session_id)
-
-    async def update_opencode_session_id(self, name: str, session_id: str) -> None:
-        await self._update_session_column(name, "opencode_session_id", session_id)
-
-    async def update_pi_session_id(self, name: str, session_id: str) -> None:
-        await self._update_session_column(name, "pi_session_id", session_id)
-
-    async def update_cursor_session_id(self, name: str, session_id: str) -> None:
-        await self._update_session_column(name, "cursor_session_id", session_id)
-
     async def update_remote_session_id(
         self, name: str, engine: str, session_id: str
     ) -> None:
@@ -424,18 +412,6 @@ class SessionRepository:
         if not column:
             return
         await self._update_session_column(name, column, session_id)
-
-    async def reset_claude_session(self, name: str) -> None:
-        await self._update_session_column(name, "claude_session_id", None)
-
-    async def reset_opencode_session(self, name: str) -> None:
-        await self._update_session_column(name, "opencode_session_id", None)
-
-    async def reset_pi_session(self, name: str) -> None:
-        await self._update_session_column(name, "pi_session_id", None)
-
-    async def reset_cursor_session(self, name: str) -> None:
-        await self._update_session_column(name, "cursor_session_id", None)
 
     async def reset_remote_session(self, name: str, engine: str) -> None:
         column = remote_session_attr(engine)

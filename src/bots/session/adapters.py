@@ -96,18 +96,6 @@ class SessionsAdapter(SessionStorePort):
     async def update_last_active(self, name: str) -> None:
         await self._repo.update_last_active(name)
 
-    async def update_claude_session_id(self, name: str, session_id: str) -> None:
-        await self._repo.update_claude_session_id(name, session_id)
-
-    async def update_pi_session_id(self, name: str, session_id: str) -> None:
-        await self._repo.update_pi_session_id(name, session_id)
-
-    async def update_opencode_session_id(self, name: str, session_id: str) -> None:
-        await self._repo.update_opencode_session_id(name, session_id)
-
-    async def update_cursor_session_id(self, name: str, session_id: str) -> None:
-        await self._repo.update_cursor_session_id(name, session_id)
-
     async def update_remote_session_id(
         self, name: str, engine: str, session_id: str
     ) -> None:
