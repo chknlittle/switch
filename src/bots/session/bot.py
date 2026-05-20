@@ -6,29 +6,14 @@ import asyncio
 from contextlib import suppress
 import logging
 import os
-import re
-import secrets
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from src.core.session_runtime import SessionRuntime
-from src.core.session_runtime.api import (
-    EventSinkPort,
-    OutboundMessage,
-    ProcessingChanged,
-    SessionEvent,
-    SessionPort,
-)
-from src.core.session_runtime.ports import (
-    AttachmentPromptPort,
-    HistoryPort,
-    MessageStorePort,
-    RalphLoopStorePort,
-    RunnerFactoryPort,
-    SessionState,
-    SessionStorePort,
-)
+from src.core.session_runtime.api import SessionPort
+from src.bots.session.adapters import PromptAdapter, build_runtime_adapters
+from src.bots.session.delegation_handler import DelegationHandlerMixin
 from src.bots.session.inbound import (
     extract_attachment_urls,
     extract_bob_images,
@@ -41,17 +26,12 @@ from src.bots.session.typing import TypingIndicator
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
 from src.db import DelegationTaskRepository
-from src.delegation import delegate_once, parse_intent, resolve_dispatcher_name
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.helpers import (
     append_to_history,
     log_activity,
 )
-from src.runners import Runner, create_runner
-from src.runners.claude.config import ClaudeConfig
-from src.runners.cursor.config import CursorConfig
-from src.runners.opencode.config import OpenCodeConfig
-from src.runners.pi.config import PiConfig
+from src.runners import Runner
 from src.attachments import Attachment, AttachmentStore
 from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
 from slixmpp.xmlstream import ET
@@ -64,7 +44,7 @@ if TYPE_CHECKING:
     from src.voice import VoiceCallManager
 
 
-class SessionBot(BaseXMPPBot):
+class SessionBot(DelegationHandlerMixin, BaseXMPPBot):
     """XMPP bot for a single session."""
 
     def __init__(
@@ -144,194 +124,20 @@ class SessionBot(BaseXMPPBot):
     # Runtime wiring
     # -------------------------------------------------------------------------
 
-    class _EventSinkAdapter(EventSinkPort):
-        def __init__(self, bot: "SessionBot"):
-            self._bot = bot
-
-        async def emit(self, event: SessionEvent) -> None:
-            if isinstance(event, ProcessingChanged):
-                self._bot.processing = event.active
-                if event.active:
-                    self._bot._typing.start()
-                else:
-                    self._bot._typing.stop()
-                return
-
-            if isinstance(event, OutboundMessage):
-                self._bot.send_reply(
-                    event.text,
-                    meta_type=event.meta_type,
-                    meta_tool=event.meta_tool,
-                    meta_attrs=event.meta_attrs,
-                    meta_payload=event.meta_payload,
-                )
-                return
-
-    class _SessionsAdapter(SessionStorePort):
-        def __init__(self, repo: SessionRepository):
-            self._repo = repo
-
-        def get(self, name: str) -> SessionState | None:
-            s = self._repo.get(name)
-            if not s:
-                return None
-            return SessionState(
-                name=s.name,
-                active_engine=s.active_engine,
-                claude_session_id=s.claude_session_id,
-                opencode_session_id=s.opencode_session_id,
-                pi_session_id=s.pi_session_id,
-                cursor_session_id=s.cursor_session_id,
-                model_id=s.model_id,
-                reasoning_mode=s.reasoning_mode,
-                opencode_agent=s.opencode_agent,
-            )
-
-        async def update_last_active(self, name: str) -> None:
-            await self._repo.update_last_active(name)
-
-        async def update_claude_session_id(self, name: str, session_id: str) -> None:
-            await self._repo.update_claude_session_id(name, session_id)
-
-        async def update_pi_session_id(self, name: str, session_id: str) -> None:
-            await self._repo.update_pi_session_id(name, session_id)
-
-        async def update_opencode_session_id(self, name: str, session_id: str) -> None:
-            await self._repo.update_opencode_session_id(name, session_id)
-
-        async def update_cursor_session_id(self, name: str, session_id: str) -> None:
-            await self._repo.update_cursor_session_id(name, session_id)
-
-        async def update_remote_session_id(
-            self, name: str, engine: str, session_id: str
-        ) -> None:
-            await self._repo.update_remote_session_id(name, engine, session_id)
-
-    class _MessagesAdapter(MessageStorePort):
-        def __init__(self, repo: MessageRepository):
-            self._repo = repo
-
-        async def add(
-            self, session_name: str, role: str, content: str, engine: str
-        ) -> None:
-            await self._repo.add(session_name, role, content, engine)
-
-    class _RunnerFactoryAdapter(RunnerFactoryPort):
-        def create(
-            self,
-            engine: str,
-            *,
-            working_dir: str,
-            output_dir: Path,
-            session_name: str,
-            pi_config: PiConfig | None = None,
-            opencode_config: OpenCodeConfig | None = None,
-            claude_config: ClaudeConfig | None = None,
-            cursor_config: CursorConfig | None = None,
-        ) -> Runner:
-            return create_runner(
-                engine,
-                working_dir=working_dir,
-                output_dir=output_dir,
-                session_name=session_name,
-                pi_config=pi_config,
-                opencode_config=opencode_config,
-                claude_config=claude_config,
-                cursor_config=cursor_config,
-            )
-
-    class _HistoryAdapter(HistoryPort):
-        def append_to_history(
-            self, message: str, working_dir: str, claude_session_id: str | None
-        ) -> None:
-            append_to_history(message, working_dir, claude_session_id)
-
-        def log_activity(self, message: str, *, session: str, source: str) -> None:
-            log_activity(message, session=session, source=source)
-
-    class _PromptAdapter(AttachmentPromptPort):
-        def augment_prompt(
-            self, body: str, attachments: list[Attachment] | None
-        ) -> str:
-            if not attachments:
-                return (body or "").strip()
-            lines: list[str] = [(body or "").strip(), "", "User attached image(s):"]
-            for a in attachments:
-                lines.append(f"- {a.local_path}")
-            return "\n".join(lines).strip()
-
-    class _RalphLoopsAdapter(RalphLoopStorePort):
-        def __init__(self, repo: RalphLoopRepository):
-            self._repo = repo
-
-        async def create(
-            self,
-            session_name: str,
-            prompt: str,
-            max_iterations: int,
-            completion_promise: str | None,
-            wait_seconds: float,
-        ) -> int:
-            return await self._repo.create(
-                session_name,
-                prompt,
-                max_iterations=max_iterations,
-                completion_promise=completion_promise,
-                wait_seconds=float(wait_seconds or 0.0),
-            )
-
-        async def update_progress(
-            self,
-            loop_id: int,
-            current_iteration: int,
-            total_cost: float,
-            status: str = "running",
-        ) -> None:
-            await self._repo.update_progress(
-                loop_id, current_iteration, total_cost, status
-            )
-
     def _build_runtime(self) -> SessionRuntime:
+        ports = build_runtime_adapters(
+            self,
+            sessions=self.sessions,
+            messages=self.messages,
+            ralph_loops=self.ralph_loops,
+        )
         return SessionRuntime(
             session_name=self.session_name,
             working_dir=self.working_dir,
             output_dir=self.output_dir,
-            sessions=self._SessionsAdapter(self.sessions),
-            messages=self._MessagesAdapter(self.messages),
-            events=self._EventSinkAdapter(self),
-            runner_factory=self._RunnerFactoryAdapter(),
-            history=self._HistoryAdapter(),
-            prompt=self._PromptAdapter(),
-            ralph_loops=self._RalphLoopsAdapter(self.ralph_loops),
             infer_meta_tool_from_summary=self._infer_meta_tool_from_summary,
             startup_prompt_context=self._build_delegation_startup_context,
-        )
-
-    def _build_delegation_startup_context(self) -> str:
-        session = self.sessions.get(self.session_name)
-        if session and session.dispatcher_jid and self.manager:
-            dispatcher_jid = session.dispatcher_jid.split("/", 1)[0]
-            for cfg in (self.manager.dispatchers_config or {}).values():
-                if not isinstance(cfg, dict):
-                    continue
-                jid = str(cfg.get("jid") or "").split("/", 1)[0]
-                if jid != dispatcher_jid:
-                    continue
-                if cfg.get("delegation_context") is False:
-                    return ""
-                break
-
-        dispatchers = self._available_delegate_dispatchers()
-        if not dispatchers:
-            return ""
-
-        names = ", ".join(sorted(dispatchers.keys()))
-        return (
-            "[Switch delegation context]\n"
-            f"Available dispatchers right now: {names}.\n"
-            "When the user asks to ask/delegate to another model, use one of these names. "
-            "Use /dispatchers to refresh this list if needed. "
-            "If the user mentions unfamiliar terms, check Switch session history for relevant context before responding."
+            **ports,
         )
 
     # -------------------------------------------------------------------------
@@ -1026,7 +832,7 @@ class SessionBot(BaseXMPPBot):
             session = self.sessions.get(self.session_name)
             if not session:
                 return
-            body_for_history = self._PromptAdapter().augment_prompt(
+            body_for_history = PromptAdapter().augment_prompt(
                 body, list(attachments or [])
             )
             append_to_history(
@@ -1045,167 +851,6 @@ class SessionBot(BaseXMPPBot):
                 "Failed persisting local-intent user message for session=%s",
                 self.session_name,
             )
-
-    def _available_delegate_dispatchers(self) -> dict[str, dict]:
-        if not self.manager:
-            return {}
-
-        out: dict[str, dict] = {}
-        for name, cfg in (self.manager.dispatchers_config or {}).items():
-            if not isinstance(cfg, dict):
-                continue
-            if cfg.get("disabled") is True:
-                continue
-            jid = str(cfg.get("jid") or "").strip()
-            password = str(cfg.get("password") or "").strip()
-            if not jid or not password:
-                continue
-            out[str(name)] = cfg
-        return out
-
-    async def _maybe_handle_conversational_delegation(self, body: str) -> bool:
-        dispatchers = self._available_delegate_dispatchers()
-        unknown_target = self._extract_unknown_delegation_target(body, dispatchers)
-        if unknown_target:
-            known = ", ".join(sorted(dispatchers.keys())) or "none"
-            self.send_reply(
-                f"I couldn't find dispatcher '{unknown_target}'. Available: {known}. "
-                "Try /dispatchers for the full list."
-            )
-            return True
-
-        intent = parse_intent(body, dispatchers=dispatchers)
-        if not intent:
-            return False
-
-        cfg = dispatchers.get(intent.dispatcher_name)
-        if not cfg:
-            self.send_reply(
-                f"Delegation failed: unknown dispatcher '{intent.dispatcher_name}'."
-            )
-            return True
-
-        dispatcher_jid = str(cfg.get("jid") or "").strip()
-        dispatcher_password = str(cfg.get("password") or "").strip()
-        if not dispatcher_jid or not dispatcher_password:
-            self.send_reply(
-                f"Delegation failed: dispatcher '{intent.dispatcher_name}' is not fully configured."
-            )
-            return True
-
-        token = f"switch-delegate-{secrets.token_hex(6)}"
-        try:
-            self.delegations.create(
-                token=token,
-                parent_session=self.session_name,
-                dispatcher_name=intent.dispatcher_name,
-                dispatcher_jid=dispatcher_jid,
-                prompt=intent.prompt,
-            )
-            self.delegations.mark_running(token)
-        except Exception:
-            self.log.exception("Failed to persist delegation task")
-
-        self.send_reply(
-            f"Delegating to {intent.dispatcher_name}...",
-            meta_type="delegation",
-            meta_tool="delegate",
-            meta_attrs={
-                "version": "1",
-                "state": "running",
-                "dispatcher": intent.dispatcher_name,
-                "token": token,
-            },
-        )
-
-        timeout_s = float(os.getenv("SWITCH_DELEGATE_TIMEOUT_S", "180") or "180")
-        poll_s = float(os.getenv("SWITCH_DELEGATE_POLL_INTERVAL_S", "1.0") or "1.0")
-
-        async def _send_via_current_session(envelope: str) -> None:
-            self.send_message(
-                mto=cast(Any, dispatcher_jid), mbody=envelope, mtype="chat"
-            )
-
-        try:
-            result = await delegate_once(
-                self.db,
-                server=self.xmpp_server,
-                dispatcher_jid=dispatcher_jid,
-                dispatcher_password=dispatcher_password,
-                prompt=intent.prompt,
-                parent_session=self.session_name,
-                token=token,
-                timeout_s=timeout_s,
-                poll_interval_s=poll_s,
-                send_func=_send_via_current_session,
-                on_spawned=lambda s, m: self.delegations.mark_spawned(
-                    token,
-                    delegated_session=s,
-                    delegated_user_message_id=m,
-                ),
-            )
-            with suppress(Exception):
-                self.delegations.mark_completed(
-                    token,
-                    delegated_reply_message_id=result.assistant_message_id,
-                )
-            self.send_reply(
-                f"[Delegated via {intent.dispatcher_name} ({result.session_name})]\n\n{result.content}",
-                meta_type="delegation",
-                meta_tool="delegate",
-                meta_attrs={
-                    "version": "1",
-                    "state": "completed",
-                    "dispatcher": intent.dispatcher_name,
-                    "token": token,
-                    "delegated_session": result.session_name,
-                },
-            )
-        except TimeoutError as e:
-            with suppress(Exception):
-                self.delegations.mark_failed(token, error=str(e), status="timed_out")
-            self.send_reply(f"Delegation timed out: {e}")
-        except Exception as e:
-            with suppress(Exception):
-                self.delegations.mark_failed(token, error=str(e), status="failed")
-            self.send_reply(f"Delegation failed: {type(e).__name__}: {e}")
-
-        return True
-
-    def _extract_unknown_delegation_target(
-        self, body: str, dispatchers: dict[str, dict]
-    ) -> str | None:
-        text = (body or "").strip()
-        if not text:
-            return None
-
-        known = set(dispatchers.keys())
-        if not known:
-            return None
-
-        normalized = re.sub(r"\s+", " ", text).strip()
-        normalized = re.sub(
-            r"^(?:(?:ok(?:ay)?|alright|all\s+right|hey|yo|well|so|right|hmm|um|uh)[,\s]+)+",
-            "",
-            normalized,
-            flags=re.IGNORECASE,
-        ).strip()
-
-        patterns = [
-            r"^(?:please\s+)?(?:can\s+you\s+)?(?:ask|query|consult)\s+(?P<target>[a-z0-9_-]+)\s+",
-            r"^(?:please\s+)?(?:can\s+you\s+)?delegate(?:\s+(?:this|that|it))?(?:\s+to)?\s+(?P<target>[a-z0-9_-]+)\b",
-            r"^(?:please\s+)?(?:can\s+you\s+)?get\s+(?:a\s+)?second\s+opinion\s+from\s+(?P<target>[a-z0-9_-]+)\b",
-        ]
-        for pat in patterns:
-            m = re.match(pat, normalized, flags=re.IGNORECASE)
-            if not m:
-                continue
-            target = (m.groupdict().get("target") or "").strip()
-            if not target:
-                continue
-            if resolve_dispatcher_name(target, known) is None:
-                return target
-        return None
 
     def _current_dispatcher_jid(self) -> str:
         session = self.sessions.get(self.session_name)
