@@ -9,18 +9,13 @@ This module focuses on:
 
 from __future__ import annotations
 
-import os
-import re
 from typing import Callable
 
 from src.runners.base import RunState
+from src.runners.opencode import event_handlers
 from src.runners.opencode.events import coerce_event
-from src.runners.opencode.models import Event, PermissionRequest, Question
-from src.runners.tool_logging import (
-    format_tool_input_preview,
-    should_log_tool_input,
-    tool_input_max_len,
-)
+from src.runners.opencode.models import Event
+from src.runners.opencode.text_sanitize import sanitize_assistant_text
 
 
 class OpenCodeEventProcessor:
@@ -37,483 +32,7 @@ class OpenCodeEventProcessor:
 
     @staticmethod
     def _sanitize_assistant_text(text: str) -> str:
-        if not text:
-            return ""
-
-        # Some local models leak internal reasoning inside <think> blocks, or
-        # emit an orphaned closing tag with the visible answer after it.
-        text = re.sub(
-            r"<think>.*?</think>\s*", "", text, flags=re.IGNORECASE | re.DOTALL
-        )
-        if "</think>" in text:
-            text = text.rsplit("</think>", 1)[1]
-        if "<think>" in text:
-            text = text.split("<think>", 1)[0]
-        return text.lstrip()
-
-    def _handle_step_start(self, event: dict, state: RunState) -> Event | None:
-        session_id = event.get("sessionID")
-        if isinstance(session_id, str) and session_id:
-            state.session_id = session_id
-            return ("session_id", session_id)
-        return None
-
-    def _apply_text_update(self, text: str, state: RunState) -> Event | None:
-        if not text:
-            return None
-
-        state.raw_text = text
-        text = self._sanitize_assistant_text(text)
-
-        # SSE sends full accumulated text, not deltas - extract only the new part.
-        if text.startswith(state.text):
-            delta = text[len(state.text) :]
-            state.text = text
-            if delta:
-                return ("text", delta)
-            return None
-
-        state.text = text
-        return ("text", text)
-
-    def _handle_text(self, event: dict, state: RunState) -> Event | None:
-        part = event.get("part", {})
-        text = part.get("text", "") if isinstance(part, dict) else ""
-        if isinstance(text, str):
-            return self._apply_text_update(text, state)
-        return None
-
-    def _handle_message_meta(self, event: dict, state: RunState) -> Event | None:
-        message_id = event.get("messageID")
-        role = event.get("role")
-        if (
-            isinstance(message_id, str)
-            and message_id
-            and isinstance(role, str)
-            and role
-        ):
-            state.message_roles[message_id] = role
-        return None
-
-    def _handle_message_part_meta(self, event: dict, state: RunState) -> Event | None:
-        part_id = event.get("partID")
-        part_type = event.get("partType")
-        if (
-            isinstance(part_id, str)
-            and part_id
-            and isinstance(part_type, str)
-            and part_type
-        ):
-            state.message_part_types[part_id] = part_type
-        return None
-
-    def _handle_message_part_delta(self, event: dict, state: RunState) -> Event | None:
-        message_id = event.get("messageID")
-        role = (
-            state.message_roles.get(message_id)
-            if isinstance(message_id, str) and message_id
-            else None
-        )
-        if role != "assistant":
-            return None
-
-        part_id = event.get("partID")
-        part_type = (
-            state.message_part_types.get(part_id)
-            if isinstance(part_id, str) and part_id
-            else None
-        )
-        if part_type is not None and part_type != "text":
-            return None
-
-        text = event.get("text", "")
-        if not isinstance(text, str) or not text:
-            return None
-
-        state.raw_text += text
-        visible_text = self._sanitize_assistant_text(state.raw_text)
-        if not visible_text.startswith(state.text):
-            state.text = visible_text
-            return ("text", visible_text)
-
-        delta = visible_text[len(state.text) :]
-        state.text = visible_text
-        if not delta:
-            return None
-        return ("text", delta)
-
-    def _handle_tool_use(self, event: dict, state: RunState) -> Event | None:
-        part = event.get("part", {})
-        if not isinstance(part, dict):
-            return None
-
-        tool = part.get("tool")
-        if not tool:
-            return None
-
-        def _clean_label(value: object, *, max_len: int = 180) -> str | None:
-            if not isinstance(value, str):
-                return None
-            s = " ".join(value.split())
-            if not s:
-                return None
-            if len(s) > max_len:
-                return s[: max_len - 3] + "..."
-            return s
-
-        def _extract_tool_input(
-            part_obj: dict, tool_state_obj: object
-        ) -> object | None:
-            raw_input: object | None = None
-            if isinstance(tool_state_obj, dict):
-                for key in ("input", "args", "arguments", "params"):
-                    value = tool_state_obj.get(key)
-                    if value is not None:
-                        raw_input = value
-                        break
-
-                # Some server builds expose bash command directly on state.
-                if raw_input is None and str(tool) == "bash":
-                    cmd = tool_state_obj.get("command")
-                    if isinstance(cmd, str) and cmd.strip():
-                        raw_input = {"command": cmd.strip()}
-            if raw_input is None:
-                for key in ("input", "args", "arguments", "params"):
-                    value = part_obj.get(key)
-                    if value is not None:
-                        raw_input = value
-                        break
-
-            if raw_input is None and str(tool) == "bash":
-                cmd = part_obj.get("command")
-                if isinstance(cmd, str) and cmd.strip():
-                    raw_input = {"command": cmd.strip()}
-            return raw_input
-
-        def _extract_desc_parts(
-            *,
-            part_obj: dict,
-            tool_state_obj: object,
-            tool_input_obj: object | None,
-        ) -> tuple[str | None, str | None]:
-            title = None
-            description = None
-
-            def _is_meaningful_preview(value: str | None) -> bool:
-                if not value:
-                    return False
-                v = value.strip()
-                if not v:
-                    return False
-                return v not in {"{}", "[]", '""', "null", "None"}
-
-            if isinstance(tool_state_obj, dict):
-                title = _clean_label(tool_state_obj.get("title"))
-                description = _clean_label(tool_state_obj.get("description"))
-
-            if description is None and isinstance(part_obj, dict):
-                description = _clean_label(part_obj.get("description"))
-
-            # Tool schemas commonly include a per-call description inside args/input.
-            if isinstance(tool_input_obj, dict):
-                if title is None:
-                    title = _clean_label(tool_input_obj.get("title"))
-                if description is None:
-                    description = _clean_label(tool_input_obj.get("description"))
-
-                # Keep bash progress readable even when full tool-input logging is
-                # disabled. Show a short command preview in the tool header.
-                if str(tool) == "bash" and title is None:
-                    cmd = tool_input_obj.get("command")
-                    title = _clean_label(cmd, max_len=100)
-
-            # Some servers send bash input as a plain string command.
-            if (
-                str(tool) == "bash"
-                and title is None
-                and isinstance(tool_input_obj, str)
-            ):
-                title = _clean_label(tool_input_obj, max_len=100)
-
-            # Generic fallback: show a compact preview when available so tool
-            # progress stays informative even when input logging is disabled.
-            if title is None and description is None and tool_input_obj is not None:
-                preview = format_tool_input_preview(str(tool), tool_input_obj)
-                if _is_meaningful_preview(preview):
-                    title = _clean_label(preview, max_len=100)
-
-            # Avoid duplicating identical strings.
-            if title and description and title == description:
-                description = None
-
-            return title, description
-
-        def _extract_task_ref(part_obj: dict, tool_state_obj: object) -> str | None:
-            if str(tool) != "task":
-                return None
-
-            candidates: list[object] = [tool_state_obj, part_obj]
-            for candidate in candidates:
-                if not isinstance(candidate, dict):
-                    continue
-
-                for key in ("task_id", "taskId"):
-                    value = candidate.get(key)
-                    if isinstance(value, str) and value.strip():
-                        return f"task {value.strip()}"
-
-                metadata = candidate.get("metadata")
-                if isinstance(metadata, dict):
-                    for key in ("sessionId", "sessionID", "task_id", "taskId"):
-                        value = metadata.get(key)
-                        if isinstance(value, str) and value.strip():
-                            return f"child {value.strip()}"
-
-            return None
-
-        # Deduplicate: SSE can send multiple updates for the same tool call.
-        # Tool input/args often arrives on a later update, so allow a follow-up
-        # event to log input even if we already logged the tool header.
-        tool_id = part.get("id") or part.get("toolUseId") or part.get("callID")
-        if not tool_id:
-            msg_id = part.get("messageID", "")
-            idx = part.get("index", "")
-            if msg_id or idx:
-                tool_id = f"{msg_id}:{idx}"
-
-        tool_state = part.get("state", {})
-        tool_input = _extract_tool_input(part, tool_state)
-        has_input = tool_input is not None
-
-        title, description = _extract_desc_parts(
-            part_obj=part,
-            tool_state_obj=tool_state,
-            tool_input_obj=tool_input,
-        )
-
-        extra_bits: list[str] = []
-        if title:
-            extra_bits.append(title)
-        if description:
-            extra_bits.append(description)
-        task_ref = _extract_task_ref(part, tool_state)
-        if task_ref:
-            extra_bits.append(task_ref)
-        extra = " | ".join(extra_bits)
-        desc = f"[tool:{tool} {extra}]" if extra else f"[tool:{tool}]"
-        has_rich_header = bool(extra)
-
-        if tool_id and tool_id in state.seen_tool_ids:
-            if (
-                has_input
-                and should_log_tool_input()
-                and tool_id not in state.tool_input_logged_ids
-            ):
-                formatted = format_tool_input_preview(str(tool), tool_input)
-                if formatted:
-                    max_len = tool_input_max_len()
-                    formatted = formatted[:max_len]
-                    self._log_to_file(f"  input: {formatted}\n")
-                    state.tool_input_logged_ids.add(tool_id)
-                    return ("tool", f"[tool:{tool}] input: {formatted}")
-
-            # If a follow-up SSE update finally contains useful title/command
-            # info, emit one upgraded header even when input logging is off.
-            if has_rich_header and tool_id not in state.tool_header_upgraded_ids:
-                self._log_to_file(f"{desc}\n")
-                state.tool_header_upgraded_ids.add(tool_id)
-                return ("tool", desc)
-            return None
-
-        if tool_id:
-            state.seen_tool_ids.add(tool_id)
-
-        state.tool_count += 1
-        if tool_id and has_rich_header:
-            state.tool_header_upgraded_ids.add(tool_id)
-
-        if should_log_tool_input():
-            formatted = format_tool_input_preview(str(tool), tool_input)
-            if formatted:
-                max_len = tool_input_max_len()
-                formatted = formatted[:max_len]
-                self._log_to_file(f"{desc}\n  input: {formatted}\n")
-                if tool_id:
-                    state.tool_input_logged_ids.add(tool_id)
-                return ("tool", f"{desc} input: {formatted}")
-
-        self._log_to_file(f"{desc}\n")
-        return ("tool", desc)
-
-    def _handle_tool_result(self, event: dict, state: RunState) -> Event | None:
-        part = event.get("part", {})
-        if not isinstance(part, dict):
-            return None
-
-        tool = part.get("tool") or part.get("name") or "tool"
-        tool_str = str(tool)
-
-        tool_id = part.get("id") or part.get("toolUseId") or part.get("callID")
-        if not tool_id:
-            msg_id = part.get("messageID", "")
-            idx = part.get("index", "")
-            if msg_id or idx:
-                tool_id = f"{msg_id}:{idx}:result"
-
-        if tool_id and tool_id in state.tool_result_seen_ids:
-            return None
-        if tool_id:
-            state.tool_result_seen_ids.add(tool_id)
-
-        def _pick(obj: object, keys: tuple[str, ...]) -> object | None:
-            if not isinstance(obj, dict):
-                return None
-            for key in keys:
-                value = obj.get(key)
-                if value is not None:
-                    return value
-            return None
-
-        state_obj = part.get("state")
-
-        exit_code = _pick(part, ("exitCode", "exit_code", "code"))
-        if exit_code is None:
-            exit_code = _pick(state_obj, ("exitCode", "exit_code", "code"))
-
-        output = _pick(part, ("output", "stdout", "stderr", "result", "text"))
-        if output is None:
-            output = _pick(
-                state_obj,
-                (
-                    "output",
-                    "stdout",
-                    "stderr",
-                    "result",
-                    "response",
-                    "text",
-                    "error",
-                ),
-            )
-
-        pieces: list[str] = []
-
-        if tool_str == "task":
-            task_ref = None
-            if isinstance(state_obj, dict):
-                metadata = state_obj.get("metadata")
-                if isinstance(metadata, dict):
-                    for key in ("sessionId", "sessionID", "task_id", "taskId"):
-                        value = metadata.get(key)
-                        if isinstance(value, str) and value.strip():
-                            task_ref = value.strip()
-                            break
-            if task_ref is None:
-                for key in ("task_id", "taskId"):
-                    value = _pick(part, (key,)) or _pick(state_obj, (key,))
-                    if isinstance(value, str) and value.strip():
-                        task_ref = value.strip()
-                        break
-            if task_ref:
-                pieces.append(f"child={task_ref}")
-
-        if exit_code is not None:
-            pieces.append(f"exit={exit_code}")
-
-        if isinstance(output, str):
-            compact = " ".join(output.split())
-            if compact:
-                if len(compact) > 180:
-                    compact = compact[:177] + "..."
-                pieces.append(compact)
-
-        if not pieces:
-            status = _pick(part, ("status",)) or _pick(state_obj, ("status",))
-            if isinstance(status, str) and status.strip():
-                pieces.append(status.strip())
-
-        suffix = f" {' | '.join(pieces)}" if pieces else ""
-        desc = f"[tool-result:{tool_str}{suffix}]"
-        self._log_to_file(f"{desc}\n")
-        return ("tool_result", desc)
-
-    def _handle_step_finish(self, event: dict, state: RunState) -> Event | None:
-        part = event.get("part", {})
-        if not isinstance(part, dict):
-            return None
-
-        tokens = part.get("tokens", {})
-        if isinstance(tokens, dict):
-            cache = tokens.get("cache", {})
-            state.tokens_in += int(tokens.get("input", 0) or 0)
-            state.tokens_out += int(tokens.get("output", 0) or 0)
-            state.tokens_reasoning += int(tokens.get("reasoning", 0) or 0)
-            if isinstance(cache, dict):
-                state.tokens_cache_read += int(cache.get("read", 0) or 0)
-                state.tokens_cache_write += int(cache.get("write", 0) or 0)
-
-        state.cost += float(part.get("cost", 0) or 0)
-
-        if part.get("reason") == "stop":
-            state.saw_result = True
-            return ("result", self.make_result(state))
-        return None
-
-    def _handle_error(self, event: dict, state: RunState) -> Event:
-        state.saw_error = True
-        message = event.get("message")
-        error = event.get("error")
-
-        if isinstance(message, dict):
-            message = message.get("data", {}).get("message") or message.get("message")
-
-        return ("error", str(message or error or "OpenCode error"))
-
-    def _handle_question(self, event: dict, state: RunState) -> Event | None:
-        request_id = (
-            event.get("requestID")
-            or event.get("id")
-            or event.get("properties", {}).get("requestID")
-            or event.get("properties", {}).get("id")
-        )
-
-        questions = (
-            event.get("questions") or event.get("properties", {}).get("questions") or []
-        )
-
-        if not request_id:
-            self._log_to_file(f"Question event missing request ID: {event}\n")
-            return None
-
-        question = Question(request_id=request_id, questions=questions)
-        self._log_to_file(f"\n[QUESTION] {request_id}: {questions}\n")
-        return ("question", question)
-
-    def _handle_permission_request(self, event: dict, state: RunState) -> Event | None:
-        request_id = event.get("requestID") or event.get("id")
-        permission = event.get("permission")
-        patterns = event.get("patterns")
-        message = event.get("message")
-
-        if not isinstance(request_id, str) or not request_id:
-            self._log_to_file(f"Permission event missing request ID: {event}\n")
-            return None
-        if not isinstance(permission, str) or not permission:
-            permission = "permission"
-
-        normalized_patterns: list[str] = []
-        if isinstance(patterns, list):
-            normalized_patterns = [p for p in patterns if isinstance(p, str) and p]
-
-        request = PermissionRequest(
-            request_id=request_id,
-            permission=permission,
-            patterns=normalized_patterns,
-            message=message if isinstance(message, str) and message else None,
-        )
-        self._log_to_file(
-            f"\n[PERMISSION] {request_id}: {permission} {normalized_patterns}\n"
-        )
-        return ("permission", request)
+        return sanitize_assistant_text(text)
 
     def make_result(self, state: RunState) -> dict:
         if self._log_response and state.text:
@@ -590,46 +109,35 @@ class OpenCodeEventProcessor:
         if not isinstance(event_type, str):
             return None
 
+        log = self._log_to_file
+
         if event_type == "step_start":
-            return self._handle_step_start(event, state)
+            return event_handlers.handle_step_start(event, state)
         if event_type == "text":
-            return self._handle_text(event, state)
+            return event_handlers.handle_text(event, state)
         if event_type == "tool_use":
-            return self._handle_tool_use(event, state)
+            return event_handlers.handle_tool_use(event, state, log_to_file=log)
         if event_type == "tool_result":
-            return self._handle_tool_result(event, state)
+            return event_handlers.handle_tool_result(event, state, log_to_file=log)
         if event_type == "step_finish":
-            return self._handle_step_finish(event, state)
-        if event_type == "error":
-            return self._handle_error(event, state)
-        if event_type in {"question.asked", "question"}:
-            return self._handle_question(event, state)
-        if event_type == "permission.requested":
-            return self._handle_permission_request(event, state)
-        if event_type == "message_meta":
-            return self._handle_message_meta(event, state)
-        if event_type == "message_part_meta":
-            return self._handle_message_part_meta(event, state)
-        if event_type == "message_part_delta":
-            return self._handle_message_part_delta(event, state)
-
-        # Server-mode streams often send message events rather than "text".
-        if event_type == "message_part":
-            part_id = event.get("partID")
-            if isinstance(part_id, str) and part_id:
-                state.message_part_types[part_id] = "text"
-
-            message_id = event.get("messageID")
-            role = (
-                state.message_roles.get(message_id)
-                if isinstance(message_id, str) and message_id
-                else None
+            return event_handlers.handle_step_finish(
+                event, state, make_result=self.make_result
             )
-            if role != "assistant":
-                return None
-
-            text = event.get("text", "")
-            if isinstance(text, str):
-                return self._apply_text_update(text, state)
+        if event_type == "error":
+            return event_handlers.handle_error(event, state)
+        if event_type in {"question.asked", "question"}:
+            return event_handlers.handle_question(event, state, log_to_file=log)
+        if event_type == "permission.requested":
+            return event_handlers.handle_permission_request(
+                event, state, log_to_file=log
+            )
+        if event_type == "message_meta":
+            return event_handlers.handle_message_meta(event, state)
+        if event_type == "message_part_meta":
+            return event_handlers.handle_message_part_meta(event, state)
+        if event_type == "message_part_delta":
+            return event_handlers.handle_message_part_delta(event, state)
+        if event_type == "message_part":
+            return event_handlers.handle_message_part(event, state)
 
         return None
