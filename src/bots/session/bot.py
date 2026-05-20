@@ -6,14 +6,15 @@ import asyncio
 from contextlib import suppress
 import logging
 import os
-import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from src.core.session_runtime import SessionRuntime
 from src.core.session_runtime.api import SessionPort
 from src.bots.session.adapters import PromptAdapter, build_runtime_adapters
 from src.bots.session.delegation_handler import DelegationHandlerMixin
+from src.bots.session.room import RoomMixin
+from src.bots.session.vllm_abort import VllmAbortMixin
 from src.bots.session.inbound import (
     extract_attachment_urls,
     extract_bob_images,
@@ -44,7 +45,7 @@ if TYPE_CHECKING:
     from src.voice import VoiceCallManager
 
 
-class SessionBot(DelegationHandlerMixin, BaseXMPPBot):
+class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot):
     """XMPP bot for a single session."""
 
     def __init__(
@@ -372,32 +373,6 @@ class SessionBot(DelegationHandlerMixin, BaseXMPPBot):
 
         _safe_send(msg)
 
-    def _load_room_settings(self) -> None:
-        session = self.sessions.get(self.session_name)
-        self.room_jid = (session.room_jid or "").split("/", 1)[0] if session else None
-        self.room_nick = self.session_name
-
-    async def _join_collaboration_room(self) -> bool:
-        room = (self.room_jid or "").strip()
-        if not room:
-            return True
-        try:
-            muc = cast(Any, self["xep_0045"])
-            await muc.join_muc(room, self.room_nick)  # type: ignore[attr-defined]
-            participants = self.sessions.list_collaborators(self.session_name)
-            for participant in participants:
-                if participant == str(self.boundjid.bare):
-                    continue
-                try:
-                    muc.invite(room, participant)  # type: ignore[attr-defined]
-                except Exception:
-                    continue
-            return True
-        except Exception:
-            self.startup_error = f"failed to join collaboration room {room}"
-            self.log.exception("Failed to join collaboration room: %s", room)
-            return False
-
     @staticmethod
     def _infer_meta_tool_from_summary(summary: str) -> str | None:
         """Best-effort mapping from tool summary text to meta.tool."""
@@ -456,123 +431,6 @@ class SessionBot(DelegationHandlerMixin, BaseXMPPBot):
             asyncio.ensure_future(self._voice.hangup_all())
 
         return cancelled_any
-
-    def _maybe_abort_vllm_inference(self) -> None:
-        """Best-effort: ask Helga vLLM to stop active inference.
-
-        This is intentionally conservative:
-        - Only triggers for sessions using vLLM-backed models (Pi, OpenCode, vllm-direct)
-        - Only triggers for known vLLM-backed models (glm_vllm/, heretic_local/, heretic-v2, etc.)
-        - Cooldown + single in-flight task to avoid request storms
-        """
-
-        enabled = os.getenv("SWITCH_VLLM_HARD_CANCEL", "1").strip().lower()
-        if enabled not in {"1", "true", "yes", "on"}:
-            return
-
-        session = self.sessions.get(self.session_name)
-        if not session:
-            return
-        engine = (session.active_engine or "").strip().lower()
-        model_id = (session.model_id or "").strip()
-
-        # Check if this is a vLLM-backed engine
-        vllm_engines = {"pi", "opencode", "vllm-direct"}
-        if engine not in vllm_engines:
-            return
-
-        # Check if this is a vLLM-backed model
-        is_vllm_model = (
-            model_id.startswith("glm_vllm/")
-            or model_id.startswith("heretic_local/")
-            or "heretic" in model_id.lower()
-            or model_id.startswith("qwen35-")  # Heretic models often use qwen35 prefix
-        )
-        if not is_vllm_model:
-            return
-
-        # Avoid spamming this if multiple cancellation paths fire.
-        try:
-            cooldown_s = float(os.getenv("SWITCH_VLLM_HARD_CANCEL_COOLDOWN_S", "10"))
-        except ValueError:
-            cooldown_s = 10.0
-        now = time.monotonic()
-        if now - self._last_vllm_abort_ts < max(0.0, cooldown_s):
-            return
-        self._last_vllm_abort_ts = now
-
-        if self._vllm_abort_task and not self._vllm_abort_task.done():
-            return
-
-        self._vllm_abort_task = self.spawn_guarded(
-            self._abort_vllm_inference(), context="session.vllm.abort_inference"
-        )
-
-    async def _abort_vllm_inference(self) -> None:
-        """Call Helga vLLM control endpoints to stop active inference."""
-
-        host = os.getenv("SWITCH_VLLM_SSH_HOST", "chkn_gpus").strip() or "chkn_gpus"
-        health_url = os.getenv(
-            "SWITCH_VLLM_HEALTH_URL", "http://127.0.0.1:8027/v1/models"
-        )
-        pause_url = os.getenv("SWITCH_VLLM_PAUSE_URL", "http://127.0.0.1:8027/pause")
-        resume_url = os.getenv("SWITCH_VLLM_RESUME_URL", "http://127.0.0.1:8027/resume")
-
-        try:
-            timeout_s = float(os.getenv("SWITCH_VLLM_HARD_CANCEL_TIMEOUT_S", "90"))
-        except ValueError:
-            timeout_s = 90.0
-
-        remote_cmd = (
-            "set -euo pipefail; "
-            f"curl -fsS -X POST {pause_url} >/dev/null; "
-            "sleep 0.2; "
-            f"curl -fsS -X POST {resume_url} >/dev/null; "
-            f"curl -fsS {health_url} >/dev/null"
-        )
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=10",
-                host,
-                remote_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except OSError as e:
-            self.log.warning("vLLM hard abort: failed to spawn ssh: %s", e)
-            return
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_s
-            )
-        except asyncio.TimeoutError:
-            with suppress(Exception):
-                proc.kill()
-            self.log.warning(
-                "vLLM cancel nudge timed out host=%s pause=%s resume=%s timeout_s=%s",
-                host,
-                pause_url,
-                resume_url,
-                timeout_s,
-            )
-            return
-
-        if proc.returncode != 0:
-            out = (stdout or b"").decode("utf-8", errors="replace").strip()
-            err = (stderr or b"").decode("utf-8", errors="replace").strip()
-            self.log.warning(
-                "vLLM cancel nudge failed (rc=%s) host=%s health=%s stdout=%s stderr=%s",
-                proc.returncode,
-                host,
-                health_url,
-                out[-1000:],
-                err[-1000:],
-            )
 
     async def hard_kill(self) -> None:
         """Hard-kill this session.
