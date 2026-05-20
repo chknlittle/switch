@@ -46,7 +46,7 @@ _ALIAS_TO_DISPATCHER: dict[str, str] = {
     "gpt": "oc-gpt",
     "chatgpt": "oc-gpt",
     "claude": "cc",
-    "heretic": "qwen",
+    "heretic": "heretic",
     "glm": "qwen",
     "kimi": "oc-kimi-coding",
     "zen": "oc-glm-zen",

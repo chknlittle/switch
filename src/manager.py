@@ -134,6 +134,7 @@ class SessionManager:
                 manager=self,
                 engine=cfg["engine"],
                 model_id=cfg.get("model_id"),
+                reasoning_mode=cfg.get("reasoning_mode", "normal"),
                 agent=cfg.get("agent"),
                 label=cfg["label"],
             )

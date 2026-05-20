@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, cast
 
 import aiohttp
 
@@ -14,7 +14,12 @@ from src.runners.base import BaseRunner, RunState
 from src.runners.opencode.client import OpenCodeClient
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.opencode.events import extract_session_id
-from src.runners.opencode.models import Event, Question, QuestionCallback
+from src.runners.opencode.models import (
+    Event,
+    PermissionRequest,
+    Question,
+    QuestionCallback,
+)
 from src.runners.opencode.processor import OpenCodeEventProcessor
 from src.runners.opencode.transport import OpenCodeTransport, build_http_timeout
 from src.runners.pipeline import iter_queue_pipeline
@@ -30,6 +35,16 @@ class _QuestionHandler:
         question: Question,
         *,
         cancel_event: asyncio.Event,
+    ) -> None:
+        raise NotImplementedError
+
+
+class _PermissionHandler:
+    async def handle(
+        self,
+        session: aiohttp.ClientSession,
+        client: OpenCodeClient,
+        permission: PermissionRequest,
     ) -> None:
         raise NotImplementedError
 
@@ -54,9 +69,9 @@ class _CallbackQuestionHandler(_QuestionHandler):
 
     @staticmethod
     async def _await_callback_or_cancel(
-        callback_task: asyncio.Task[list[str]],
+        callback_task: asyncio.Future[list[list[str]]],
         cancel_event: asyncio.Event,
-    ) -> list[str]:
+    ) -> list[list[str]]:
         cancel_task = asyncio.create_task(cancel_event.wait())
         try:
             done, _ = await asyncio.wait(
@@ -83,15 +98,40 @@ class _CallbackQuestionHandler(_QuestionHandler):
         *,
         cancel_event: asyncio.Event,
     ) -> None:
-        callback_task = asyncio.create_task(self._callback(question))
+        callback_task = cast(
+            asyncio.Future[list[list[str]]],
+            asyncio.ensure_future(self._callback(question)),
+        )
         answered = False
         try:
-            answers = await self._await_callback_or_cancel(callback_task, cancel_event)
+            answers = cast(
+                list[list[str]],
+                await self._await_callback_or_cancel(callback_task, cancel_event),
+            )
             await client.answer_question(session, question, answers)
             answered = True
         finally:
             if not answered:
                 await client.reject_question(session, question)
+
+
+class _FixedPermissionHandler(_PermissionHandler):
+    def __init__(self, reply: str, message: str | None = None):
+        self._reply = reply
+        self._message = message
+
+    async def handle(
+        self,
+        session: aiohttp.ClientSession,
+        client: OpenCodeClient,
+        permission: PermissionRequest,
+    ) -> None:
+        await client.reply_permission(
+            session,
+            permission,
+            reply=self._reply,
+            message=self._message,
+        )
 
 
 class OpenCodeRunner(BaseRunner):
@@ -127,6 +167,10 @@ class OpenCodeRunner(BaseRunner):
             )
         else:
             self._question_handler = _RejectQuestionHandler()
+        self._permission_handler: _PermissionHandler = _FixedPermissionHandler(
+            self._config.permission_reply,
+            self._config.permission_message,
+        )
 
     def _build_model_payload(self) -> dict | None:
         if not self._config.model:
@@ -150,6 +194,13 @@ class OpenCodeRunner(BaseRunner):
             cancel_event=self._transport.cancel_event,
         )
 
+    async def _handle_permission_event(
+        self,
+        session: aiohttp.ClientSession,
+        permission: PermissionRequest,
+    ) -> None:
+        await self._permission_handler.handle(session, self._client, permission)
+
     async def run(
         self,
         prompt: str,
@@ -162,6 +213,7 @@ class OpenCodeRunner(BaseRunner):
             ("text", str) - Incremental response text
             ("tool", str) - Tool invocation description
             ("question", Question) - Question from AI needing answer
+            ("permission", PermissionRequest) - Permission request from AI/runtime
             ("result", dict) - Final result stats payload
             ("error", str) - Error message
         """
@@ -196,15 +248,6 @@ class OpenCodeRunner(BaseRunner):
                     event_queue=event_queue,
                 )
 
-                async def _handle_question(e: Event) -> None:
-                    _, data = e
-                    if isinstance(data, Question):
-                        await self._handle_question_event(session, data)
-
-                def _is_question(e: Event) -> bool:
-                    event_type, data = e
-                    return event_type == "question" and isinstance(data, Question)
-
                 if self._config.post_message_idle_timeout_s is not None:
                     idle_timeout_s = float(self._config.post_message_idle_timeout_s)
                 else:
@@ -223,9 +266,17 @@ class OpenCodeRunner(BaseRunner):
                     should_cancel=lambda: self._transport.cancelled,
                     idle_timeout_s=idle_timeout_s,
                     is_done=lambda s: s.saw_result or s.saw_error,
-                    is_question=_is_question,
-                    handle_question=_handle_question,
                 ):
+                    event_type, data = event
+                    if event_type == "question" and isinstance(data, Question):
+                        yield event
+                        await self._handle_question_event(session, data)
+                        continue
+                    if event_type == "permission" and isinstance(
+                        data, PermissionRequest
+                    ):
+                        await self._handle_permission_event(session, data)
+                        continue
                     yield event
 
                 # If cancellation was requested, don't wait on the message POST or poll.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
-from src.engines import normalize_engine
+from src.engines import get_engine_spec, normalize_engine, reasoning_engine_names
 from src.core.session_runtime.api import RalphConfig
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.ralph import parse_ralph_command
@@ -186,12 +186,12 @@ class CommandHandler:
         """Switch active engine."""
         parts = body.strip().lower().split()
         if len(parts) < 2:
-            self.bot.send_reply("Usage: /agent oc|cc|pi")
+            self.bot.send_reply("Usage: /agent oc|cc|pi|cursor")
             return True
 
         engine = normalize_engine(parts[1])
         if not engine:
-            self.bot.send_reply("Usage: /agent oc|cc|pi")
+            self.bot.send_reply("Usage: /agent oc|cc|pi|cursor")
             return True
 
         await self.bot.sessions.update_engine(self.bot.session_name, engine)
@@ -212,8 +212,8 @@ class CommandHandler:
             return True
 
         engine = (session.active_engine or "").strip().lower()
-        if engine not in {"pi", "opencode"}:
-            self.bot.send_reply("/thinking only applies to Pi/OpenCode sessions.")
+        if engine not in reasoning_engine_names():
+            self.bot.send_reply("/thinking only applies to reasoning-capable sessions.")
             return True
 
         await self.bot.sessions.update_reasoning_mode(self.bot.session_name, parts[1])
@@ -245,17 +245,11 @@ class CommandHandler:
         self.bot.cancel_operations(notify=False)
 
         engine = (session.active_engine or "").strip().lower()
-        if engine == "claude":
-            await self.bot.sessions.reset_claude_session(self.bot.session_name)
-        elif engine == "pi":
-            await self.bot.sessions.reset_pi_session(self.bot.session_name)
-        elif engine == "opencode":
-            await self.bot.sessions.reset_opencode_session(self.bot.session_name)
-        elif engine == "vllm-direct":
-            pass
-        else:
+        spec = get_engine_spec(engine)
+        if not spec:
             self.bot.send_reply(f"Unknown engine '{session.active_engine}'.")
             return True
+        await self.bot.sessions.reset_remote_session(self.bot.session_name, engine)
         self.bot.send_reply("Session reset.")
         return True
 
@@ -520,12 +514,12 @@ class CommandHandler:
         """Hand off to another engine."""
         parts = body.strip().split(maxsplit=2)
         if len(parts) < 2:
-            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude, opencode")
+            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude, opencode, cursor")
             return True
 
         engine = normalize_engine(parts[1])
         if not engine:
-            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude, opencode")
+            self.bot.send_reply("Usage: /handoff <engine> [prompt]\nEngines: pi, claude, opencode, cursor")
             return True
 
         if self.bot.processing:

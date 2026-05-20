@@ -99,7 +99,7 @@ class PiRunner(BaseRunner):
             else:
                 sys_prompt = _DEFAULT_SYSTEM_PROMPT
         if sys_prompt:
-            sys_prompt += _FILE_SAFETY
+            # sys_prompt += _FILE_SAFETY
             cmd.extend(["--append-system-prompt", sys_prompt])
         else:
             cmd.extend(["--append-system-prompt", _FILE_SAFETY.strip()])
@@ -256,16 +256,14 @@ class PiRunner(BaseRunner):
             if event_type == "response":
                 continue
 
-            # Agent lifecycle.
-            if event_type == "agent_end":
-                state.saw_result = True
-                break
-
             for parsed in self._processor.parse_event(event, state):
                 if parsed[0] == "_extension_ui_request":
                     await self._handle_extension_ui(parsed[1])
                     continue
                 yield parsed
+
+            if event_type == "agent_end":
+                break
 
     async def run(
         self,

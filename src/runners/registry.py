@@ -9,6 +9,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.runners.claude.config import ClaudeConfig
+from src.runners.cursor.config import CursorConfig
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
 
@@ -24,12 +26,15 @@ def create_runner(
     session_name: str | None = None,
     pi_config: PiConfig | None = None,
     opencode_config: OpenCodeConfig | None = None,
+    claude_config: ClaudeConfig | None = None,
+    cursor_config: CursorConfig | None = None,
 ) -> Runner:
     engine = (engine or "").strip().lower()
 
     if engine == "claude":
         from src.runners.claude.runner import ClaudeRunner
-        return ClaudeRunner(working_dir, output_dir, session_name)
+
+        return ClaudeRunner(working_dir, output_dir, session_name, config=claude_config)
 
     if engine == "pi":
         from src.runners.pi.runner import PiRunner
@@ -49,6 +54,16 @@ def create_runner(
             output_dir,
             session_name,
             config=opencode_config,
+        )
+
+    if engine == "cursor":
+        from src.runners.cursor.runner import CursorACPRunner
+
+        return CursorACPRunner(
+            working_dir,
+            output_dir,
+            session_name,
+            config=cursor_config,
         )
 
     if engine == "vllm-direct":

@@ -11,6 +11,7 @@ from typing import Callable
 import aiohttp
 from src.runners.opencode.errors import OpenCodeHTTPError, OpenCodeProtocolError
 from src.runners.opencode.models import Question
+from src.runners.ports import PermissionRequest
 
 log = logging.getLogger("opencode")
 
@@ -103,7 +104,14 @@ class OpenCodeClient:
 
         body: dict[str, object] = {"parts": parts}
         if model_payload:
-            body["model"] = model_payload
+            effective_model_payload = dict(model_payload)
+            if (
+                effective_model_payload.get("providerID") == "heretic_local"
+                and effective_model_payload.get("modelID") == "heretic-v3"
+                and reasoning_mode == "high"
+            ):
+                effective_model_payload["modelID"] = "heretic-v3-thinking"
+            body["model"] = effective_model_payload
         # OpenCode server v1.1.65 can silently no-op when `agent` is provided
         # (HTTP 200, empty body, no stored messages). Keep agent opt-in.
         if agent and os.getenv("SWITCH_OPENCODE_SEND_AGENT", "0") in {
@@ -112,7 +120,11 @@ class OpenCodeClient:
             "True",
         }:
             body["agent"] = agent
-        if reasoning_mode == "high" and model_payload:
+        if (
+            reasoning_mode == "high"
+            and model_payload
+            and model_payload.get("providerID") != "heretic_local"
+        ):
             body["model"] = {**model_payload, "variant": "high"}
         url = self._make_url(f"/session/{session_id}/message")
         return await self.request_json(session, "POST", url, json=body)
@@ -133,6 +145,27 @@ class OpenCodeClient:
     ) -> bool:
         url = self._make_url(f"/question/{question.request_id}/reject")
         await self.request_json(session, "POST", url)
+        return True
+
+    async def reply_permission(
+        self,
+        session: aiohttp.ClientSession,
+        permission: PermissionRequest,
+        *,
+        reply: str,
+        message: str | None = None,
+    ) -> bool:
+        url = self._make_url(f"/permission/{permission.request_id}/reply")
+        payload: dict[str, object] = {"reply": reply}
+        if message:
+            payload["message"] = message
+        await self.request_json(session, "POST", url, json=payload)
+        log.info(
+            "Answered permission %s with %s for %s",
+            permission.request_id,
+            reply,
+            permission.patterns,
+        )
         return True
 
     async def abort_session(
@@ -347,7 +380,9 @@ class OpenCodeClient:
                     event = json.loads(payload)
                 except json.JSONDecodeError as e:
                     preview = payload.strip().replace("\n", " ")[:500]
-                    log.warning("Skipping invalid OpenCode SSE JSON payload: %s", preview)
+                    log.warning(
+                        "Skipping invalid OpenCode SSE JSON payload: %s", preview
+                    )
                     continue
                 if isinstance(event, dict):
                     await queue.put(event)

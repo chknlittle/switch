@@ -1,0 +1,590 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "kimi-for-coding": {
+      "models": {
+        "kimi-k2.6": {
+          "name": "Kimi K2.6 (Coding)",
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        }
+      }
+    },
+    "glm_vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "OpenAI-compatible vLLM",
+      "options": {
+        "baseURL": "http://127.0.0.1:8027/v1"
+      },
+      "models": {
+        "qwen3.5-35b-a3b-awq4": {
+          "name": "Qwen3.5 35B A3B AWQ 4-bit",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        }
+      }
+    },
+    "epstein_vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "EpsteinLM vLLM",
+      "options": {
+        "baseURL": "http://127.0.0.1:8030/v1"
+      },
+      "models": {
+        "alphakek-epsteinLM-synth-2602-ckpt4": {
+          "name": "epsteinLM synth 2602 ckpt4 (8B FP16)",
+          "limit": {
+            "context": 32768,
+            "output": 4096
+          }
+        }
+      }
+    },
+    "spark_llama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Spark llama.cpp",
+      "options": {
+        "baseURL": "http://127.0.0.1:18080/v1"
+      },
+      "models": {
+        "qwen3.5-122b-a10b-mxfp4-moe": {
+          "name": "Qwen3.5 122B A10B MXFP4_MOE (Spark)",
+          "limit": {
+            "context": 262144,
+            "output": 8192
+          }
+        }
+      }
+    },
+    "qwen36_a3b_vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Spark Qwen3.6-35B-A3B abliterated API",
+      "options": {
+        "baseURL": "http://127.0.0.1:18080/v1"
+      },
+      "models": {
+        "qwen3.6-35b-a3b-abliterated": {
+          "name": "Qwen3.6-35B-A3B-abliterated (huihui Claude-4.7-Opus distill, FP16, Spark GB10)",
+          "options": {
+            "maxTokens": 65536,
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 1.5,
+            "frequency_penalty": 0.0,
+            "repetition_penalty": 1.0,
+            "chat_template_kwargs": {
+              "enable_thinking": true,
+              "preserve_thinking": true
+            },
+            "reasoning": {
+              "enabled": true
+            }
+          },
+          "limit": {
+            "context": 262144,
+            "output": 65536
+          }
+        }
+      }
+    },
+    "heretic_local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Helga Heretic API",
+      "options": {
+        "baseURL": "http://127.0.0.1:8021/v1"
+      },
+      "models": {
+        "heretic-v3": {
+          "name": "Qwen3.5 27B Heretic v3 (vLLM)",
+          "options": {
+            "maxTokens": 32768,
+            "reasoning": {
+              "enabled": false
+            },
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          },
+          "limit": {
+            "context": 130144,
+            "output": 32768
+          }
+        },
+        "heretic-v3-thinking": {
+          "id": "heretic-v3",
+          "name": "Qwen3.5 27B Heretic v3 (thinking)",
+          "options": {
+            "maxTokens": 32768,
+            "reasoning": {
+              "enabled": true
+            },
+            "chat_template_kwargs": {
+              "enable_thinking": true
+            }
+          },
+          "limit": {
+            "context": 130144,
+            "output": 32768
+          }
+        }
+      }
+    },
+    "openrouter": {
+      "models": {
+        "x-ai/grok-4.20-beta": {
+          "name": "xAI Grok 4.20 Beta"
+        },
+        "x-ai/grok-4.20-multi-agent-beta": {
+          "name": "xAI Grok 4.20 Multi-Agent Beta"
+        },
+        "x-ai/grok-3-beta": {
+          "name": "xAI Grok 3 Beta"
+        },
+        "x-ai/grok-3-mini-beta": {
+          "name": "xAI Grok 3 Mini Beta"
+        },
+        "openai/gpt-5.2": {
+          "name": "OpenAI GPT-5.2 via OpenRouter"
+        }
+      }
+    },
+    "openai": {
+      "models": {
+        "gpt-5.3-codex": {
+          "name": "Codex 5.3"
+        },
+        "gpt-5.4": {
+          "name": "GPT 5.4"
+        },
+        "gpt-5.5": {
+          "name": "GPT 5.5"
+        }
+      }
+    },
+    "qwen36_vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Helga Qwen3.6-27B-FP8 API",
+      "options": {
+        "baseURL": "http://127.0.0.1:8005/v1"
+      },
+      "models": {
+        "qwen3.6-27b": {
+          "name": "Qwen3.6-27B (FP8, Helga)",
+          "options": {
+            "maxTokens": 32768,
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0,
+            "chat_template_kwargs": {
+              "enable_thinking": true,
+              "preserve_thinking": true
+            },
+            "reasoning": {
+              "enabled": true
+            }
+          },
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
+        }
+      }
+    },
+    "qwen35_9b_vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Helga Qwen3.5-9B API",
+      "options": {
+        "baseURL": "http://127.0.0.1:8009/v1"
+      },
+      "models": {
+        "qwen3.5-9b": {
+          "name": "Qwen3.5-9B (FP16, Helga TP=2)",
+          "options": {
+            "maxTokens": 32768,
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "presence_penalty": 0.0,
+            "frequency_penalty": 0.0,
+            "chat_template_kwargs": {
+              "enable_thinking": true,
+              "preserve_thinking": true
+            },
+            "reasoning": {
+              "enabled": true
+            }
+          },
+          "limit": {
+            "context": 262144,
+            "output": 32768
+          }
+        }
+      }
+    }
+  },
+  "agent": {
+    "bridge": {
+      "mode": "primary",
+      "description": "XMPP bridge agent",
+      "model": "glm_vllm/qwen3.5-35b-a3b-awq4",
+      "default": true,
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-qwen": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Qwen)",
+      "model": "glm_vllm/qwen3.5-35b-a3b-awq4",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-gpt": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (GPT)",
+      "model": "openai/gpt-5.4",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-zen": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (GLM 4.7)",
+      "model": "opencode/glm-4.7",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-gpt-or": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (OpenRouter GPT)",
+      "model": "openrouter/openai/gpt-5.2",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-gemini": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Gemini)",
+      "model": "opencode/gemini-3.1-pro",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-kimi-coding": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Kimi K2.6 via Kimi for Coding)",
+      "model": "kimi-for-coding/kimi-k2.6",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "tools": {
+        "bash": true,
+        "read": true,
+        "write": true,
+        "edit": true,
+        "glob": true,
+        "grep": true,
+        "webfetch": true,
+        "task": false,
+        "skill": true
+      }
+    },
+    "bridge-epstein": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (EpsteinLM 8B via local vLLM)",
+      "model": "epstein_vllm/alphakek-epsteinLM-synth-2602-ckpt4",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "tools": {
+        "bash": false,
+        "read": false,
+        "write": false,
+        "edit": false,
+        "glob": false,
+        "grep": false,
+        "webfetch": false,
+        "task": false,
+        "skill": false
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-qwen-spark": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Qwen3.5 122B via Spark llama.cpp)",
+      "model": "spark_llama/qwen3.5-122b-a10b-mxfp4-moe",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-heretic": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Coder3101 Qwen3.5 27B Heretic via Helga)",
+      "model": "heretic_local/heretic-v3",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "tools": {
+        "bash": false,
+        "read": false,
+        "write": false,
+        "edit": false,
+        "glob": false,
+        "grep": false,
+        "webfetch": false,
+        "task": false,
+        "skill": false
+      },
+      "options": {
+        "stream": false
+      }
+    },
+    "bridge-qwen36": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Qwen3.6-27B FP8 via Helga)",
+      "model": "qwen36_vllm/qwen3.6-27b",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    },
+    "bridge-qwen36-abl": {
+      "mode": "primary",
+      "description": "XMPP bridge agent (Qwen3.6-35B-A3B abliterated via Spark vLLM)",
+      "model": "qwen36_a3b_vllm/qwen3.6-35b-a3b-abliterated",
+      "permission": {
+        "bash": "allow",
+        "read": "allow",
+        "write": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "lsp": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "external_directory": "allow",
+        "todowrite": "allow",
+        "doom_loop": "allow"
+      },
+      "options": {
+        "stream": true
+      }
+    }
+  }
+}

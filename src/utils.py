@@ -57,10 +57,20 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
         "oc-gpt": {
             "jid": os.getenv("OC_GPT_JID", f"oc-gpt@{domain}"),
             "password": os.getenv("OC_GPT_PASSWORD", ""),
-            "engine": "pi",
+            "engine": "opencode",
             "agent": "bridge-gpt",
             "model_id": os.getenv("OC_GPT_MODEL_ID", "openai/gpt-5.4"),
+            "reasoning_mode": "high",
             "label": "GPT 5.4",
+        },
+        "oc-gpt-55": {
+            "jid": os.getenv("OC_GPT_55_JID", f"oc-gpt-55@{domain}"),
+            "password": os.getenv("OC_GPT_55_PASSWORD", os.getenv("XMPP_PASSWORD", "")),
+            "engine": "opencode",
+            "agent": "bridge-gpt",
+            "model_id": os.getenv("OC_GPT_55_MODEL_ID", "openai/gpt-5.5"),
+            "reasoning_mode": "high",
+            "label": "GPT 5.5",
         },
         "oc": {
             "jid": os.getenv("OC_JID", f"oc@{domain}"),
@@ -96,16 +106,18 @@ def _legacy_dispatchers(domain: str) -> dict[str, dict]:
             "engine": "pi",
             "agent": "bridge-kimi-coding",
             "model_id": os.getenv(
-                "OC_KIMI_CODING_MODEL_ID", "kimi-for-coding/kimi-k2.5"
+                "OC_KIMI_CODING_MODEL_ID", "kimi-for-coding/kimi-k2.6"
             ),
-            "label": "Kimi K2.5 Coding",
+            "label": "Kimi K2.6 Coding",
         },
         "loom": {
             "jid": os.getenv("LOOM_JID", f"loom@{domain}"),
             "password": os.getenv("LOOM_PASSWORD", ""),
             "engine": "pi",
             "agent": "bridge",
-            "model_id": os.getenv("LOOM_MODEL_ID", "local-llama/glm-4.7-flash-heretic.Q8_0.gguf"),
+            "model_id": os.getenv(
+                "LOOM_MODEL_ID", "local-llama/glm-4.7-flash-heretic.Q8_0.gguf"
+            ),
             "label": "GLM 4.7 Flash",
         },
     }
@@ -136,7 +148,11 @@ def _normalize_dispatchers(payload: object, *, domain: str) -> dict[str, dict]:
         if jid:
             bare, sep, resource = jid.partition("/")
             localpart, at, jid_domain = bare.partition("@")
-            if at and jid_domain in _PLACEHOLDER_XMPP_DOMAINS and domain not in _PLACEHOLDER_XMPP_DOMAINS:
+            if (
+                at
+                and jid_domain in _PLACEHOLDER_XMPP_DOMAINS
+                and domain not in _PLACEHOLDER_XMPP_DOMAINS
+            ):
                 bare = f"{localpart}@{domain}"
                 jid = bare if not sep else f"{bare}/{resource}"
         if not jid:
@@ -168,10 +184,16 @@ def _normalize_dispatchers(payload: object, *, domain: str) -> dict[str, dict]:
         if isinstance(model_id, str) and model_id.strip():
             entry["model_id"] = model_id.strip()
 
+        base_url = item.get("base_url")
+        if isinstance(base_url, str) and base_url.strip():
+            entry["base_url"] = base_url.strip().rstrip("/")
+
         if _parse_bool(item.get("direct"), default=False):
             entry["direct"] = True
         if _parse_bool(item.get("disabled"), default=False):
             entry["disabled"] = True
+        if item.get("delegation_context") is False:
+            entry["delegation_context"] = False
 
         out[name] = entry
 
@@ -377,6 +399,7 @@ class BaseXMPPBot(ClientXMPP):
         super().__init__(jid, password)
         self.recipient = recipient
         self._connected_event = asyncio.Event()
+        self._last_connect_target: tuple[str, int] | None = None
 
         # Common plugins
         self.register_plugin("xep_0199")  # Ping
@@ -385,14 +408,53 @@ class BaseXMPPBot(ClientXMPP):
         self.register_plugin("xep_0030")  # Service Discovery
         self.register_plugin("xep_0115")  # Entity Capabilities (caps in presence)
 
-    def connect_to_server(self, server: str, port: int = 5222):
-        """Connect with standard settings (unencrypted, no TLS)."""
+    def _prepare_connection_settings(self) -> None:
+        """Apply Switch's standard XMPP transport settings."""
         self["feature_mechanisms"].unencrypted_plain = True  # type: ignore[attr-defined]
         self.enable_starttls = False
         self.enable_direct_tls = False
         self.enable_plaintext = True
-        # Slixmpp expects the address as a `(host, port)` tuple.
-        self.connect((server, port))
+
+    def _consume_connect_result(
+        self, result: object, *, server: str, port: int
+    ) -> None:
+        if not (asyncio.iscoroutine(result) or isinstance(result, asyncio.Future)):
+            return
+
+        task = asyncio.ensure_future(result)
+
+        def _done(t: asyncio.Future) -> None:
+            try:
+                t.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                log = getattr(self, "log", logging.getLogger("xmpp"))
+                log.warning(
+                    "XMPP connect failed for %s:%s",
+                    server,
+                    port,
+                    exc_info=True,
+                )
+
+        task.add_done_callback(_done)
+
+    def connect_to_server(self, server: str, port: int = 5222):
+        """Connect with standard settings (unencrypted, no TLS)."""
+        self._last_connect_target = (server, port)
+        self._prepare_connection_settings()
+        result = self.connect(server, port)
+        self._consume_connect_result(result, server=server, port=port)
+
+    def reconnect_to_server(self) -> None:
+        """Reconnect using the last known server/port and settings."""
+        target = self._last_connect_target
+        if not target:
+            raise RuntimeError("No prior XMPP server configured for reconnect")
+        server, port = target
+        self._prepare_connection_settings()
+        result = self.connect(server, port)
+        self._consume_connect_result(result, server=server, port=port)
 
     def set_connected(self, connected: bool) -> None:
         if connected:

@@ -50,6 +50,7 @@ class DispatcherBot(BaseXMPPBot):
         *,
         engine: str = "pi",
         model_id: str | None = None,
+        reasoning_mode: str = "normal",
         agent: str | None = None,
         label: str = "Pi",
     ):
@@ -66,6 +67,7 @@ class DispatcherBot(BaseXMPPBot):
         self.manager: SessionManager | None = manager
         self.engine = engine
         self.model_id = model_id
+        self.reasoning_mode = reasoning_mode
         self.agent = agent
         self.label = label
 
@@ -122,7 +124,7 @@ class DispatcherBot(BaseXMPPBot):
         for attempt in range(1, max_attempts + 1):
             await asyncio.sleep(delay)
             try:
-                self.connect()
+                self.reconnect_to_server()
                 self._reconnecting = False
                 return
             except Exception:
@@ -477,6 +479,7 @@ class DispatcherBot(BaseXMPPBot):
                 "",
                 engine=self.engine,
                 model_id=self.model_id,
+                reasoning_mode=self.reasoning_mode,
                 opencode_agent=self.agent,
                 label=self.label,
                 name_hint="ralph",
@@ -540,6 +543,7 @@ class DispatcherBot(BaseXMPPBot):
             message or first_message,
             engine=self.engine,
             model_id=self.model_id,
+            reasoning_mode=self.reasoning_mode,
             opencode_agent=self.agent,
             label=self.label,
             on_reserved=lambda n: self.send_reply(

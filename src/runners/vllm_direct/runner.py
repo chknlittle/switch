@@ -27,6 +27,16 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 class VLLMDirectRunner(BaseRunner):
     def __init__(
         self,
@@ -44,10 +54,13 @@ class VLLMDirectRunner(BaseRunner):
         )
         self._model = (model or os.getenv("SWITCH_VLLM_DIRECT_MODEL", "")).strip()
         self._system_prompt = os.getenv("SWITCH_VLLM_DIRECT_SYSTEM_PROMPT", "").strip()
-        self._temperature = _env_float("SWITCH_VLLM_DIRECT_TEMPERATURE", 0.5)
-        self._min_p = _env_float("SWITCH_VLLM_DIRECT_MIN_P", 0.05)
+        self._temperature = _env_float("SWITCH_VLLM_DIRECT_TEMPERATURE", 0.7)
+        self._top_p = _env_float("SWITCH_VLLM_DIRECT_TOP_P", 0.8)
+        self._top_k = _env_int("SWITCH_VLLM_DIRECT_TOP_K", 20)
+        self._min_p = _env_float("SWITCH_VLLM_DIRECT_MIN_P", 0.0)
+        self._presence_penalty = _env_float("SWITCH_VLLM_DIRECT_PRESENCE_PENALTY", 1.5)
         self._repetition_penalty = _env_float(
-            "SWITCH_VLLM_DIRECT_REPETITION_PENALTY", 1.2
+            "SWITCH_VLLM_DIRECT_REPETITION_PENALTY", 1.0
         )
         self._max_tokens = int(_env_float("SWITCH_VLLM_DIRECT_MAX_TOKENS", 1024))
         self._timeout_s = max(5.0, _env_float("SWITCH_VLLM_DIRECT_TIMEOUT_S", 600.0))
@@ -94,6 +107,9 @@ class VLLMDirectRunner(BaseRunner):
             "messages": messages,
             "stream": False,
             "temperature": self._temperature,
+            "top_p": self._top_p,
+            "top_k": self._top_k,
+            "presence_penalty": self._presence_penalty,
             "repetition_penalty": self._repetition_penalty,
             "max_tokens": self._max_tokens,
         }

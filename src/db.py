@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from src.engines import remote_session_attr
+
 log = logging.getLogger(__name__)
 
 
@@ -25,6 +27,15 @@ DB_PATH = Path(__file__).parent.parent / "sessions.db"
 
 
 _write_locks: dict[int, asyncio.Lock] = {}
+
+
+@dataclass
+class _MessageSignal:
+    condition: asyncio.Condition
+    version: int = 0
+
+
+_message_signals: dict[int, _MessageSignal] = {}
 
 
 def _shared_write_lock(conn: sqlite3.Connection) -> asyncio.Lock:
@@ -41,6 +52,46 @@ def _shared_write_lock(conn: sqlite3.Connection) -> asyncio.Lock:
     return lock
 
 
+def _shared_message_signal(conn: sqlite3.Connection) -> _MessageSignal:
+    key = id(conn)
+    signal = _message_signals.get(key)
+    if signal is None:
+        signal = _MessageSignal(condition=asyncio.Condition())
+        _message_signals[key] = signal
+    return signal
+
+
+def get_message_signal_version(conn: sqlite3.Connection) -> int:
+    return _shared_message_signal(conn).version
+
+
+async def notify_message_written(conn: sqlite3.Connection) -> None:
+    signal = _shared_message_signal(conn)
+    async with signal.condition:
+        signal.version += 1
+        signal.condition.notify_all()
+
+
+async def wait_for_message_signal(
+    conn: sqlite3.Connection, *, after_version: int, timeout_s: float
+) -> int | None:
+    signal = _shared_message_signal(conn)
+    if signal.version > after_version:
+        return signal.version
+
+    async with signal.condition:
+        if signal.version > after_version:
+            return signal.version
+        try:
+            await asyncio.wait_for(
+                signal.condition.wait_for(lambda: signal.version > after_version),
+                timeout=max(0.0, timeout_s),
+            )
+        except asyncio.TimeoutError:
+            return None
+        return signal.version
+
+
 @dataclass
 class Session:
     """Session record."""
@@ -51,8 +102,10 @@ class Session:
     claude_session_id: str | None
     opencode_session_id: str | None
     pi_session_id: str | None
+    cursor_session_id: str | None
     active_engine: str
     model_id: str | None
+    vllm_base_url: str | None
     reasoning_mode: str
     opencode_agent: str | None
     dispatcher_jid: str | None
@@ -122,6 +175,7 @@ class SessionRepository:
         "model_id",
         "opencode_session_id",
         "pi_session_id",
+        "cursor_session_id",
         "reasoning_mode",
         "status",
     }
@@ -154,8 +208,14 @@ class SessionRepository:
             pi_session_id=row["pi_session_id"]
             if "pi_session_id" in row.keys()
             else None,
+            cursor_session_id=row["cursor_session_id"]
+            if "cursor_session_id" in row.keys()
+            else None,
             active_engine=row["active_engine"] or "pi",
             model_id=row["model_id"] or None,
+            vllm_base_url=row["vllm_base_url"]
+            if "vllm_base_url" in row.keys()
+            else None,
             reasoning_mode=row["reasoning_mode"] or "normal",
             opencode_agent=row["opencode_agent"]
             if "opencode_agent" in row.keys()
@@ -291,6 +351,7 @@ class SessionRepository:
         xmpp_password: str,
         tmux_name: str,
         model_id: str | None = None,
+        vllm_base_url: str | None = None,
         active_engine: str = "pi",
         reasoning_mode: str = "normal",
         opencode_agent: str | None = None,
@@ -305,8 +366,8 @@ class SessionRepository:
             self.conn.execute(
                 """INSERT INTO sessions
                    (name, xmpp_jid, xmpp_password, tmux_name, created_at, last_active,
-                    model_id, active_engine, reasoning_mode, opencode_agent, dispatcher_jid, owner_jid, room_jid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    model_id, vllm_base_url, active_engine, reasoning_mode, opencode_agent, dispatcher_jid, owner_jid, room_jid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     name,
                     xmpp_jid,
@@ -315,6 +376,7 @@ class SessionRepository:
                     now,
                     now,
                     model_id,
+                    vllm_base_url,
                     active_engine,
                     reasoning_mode,
                     opencode_agent,
@@ -330,7 +392,9 @@ class SessionRepository:
         return created
 
     async def update_last_active(self, name: str) -> None:
-        await self._update_session_column(name, "last_active", datetime.now().isoformat())
+        await self._update_session_column(
+            name, "last_active", datetime.now().isoformat()
+        )
 
     async def update_engine(self, name: str, engine: str) -> None:
         await self._update_session_column(name, "active_engine", engine)
@@ -350,6 +414,17 @@ class SessionRepository:
     async def update_pi_session_id(self, name: str, session_id: str) -> None:
         await self._update_session_column(name, "pi_session_id", session_id)
 
+    async def update_cursor_session_id(self, name: str, session_id: str) -> None:
+        await self._update_session_column(name, "cursor_session_id", session_id)
+
+    async def update_remote_session_id(
+        self, name: str, engine: str, session_id: str
+    ) -> None:
+        column = remote_session_attr(engine)
+        if not column:
+            return
+        await self._update_session_column(name, column, session_id)
+
     async def reset_claude_session(self, name: str) -> None:
         await self._update_session_column(name, "claude_session_id", None)
 
@@ -358,6 +433,15 @@ class SessionRepository:
 
     async def reset_pi_session(self, name: str) -> None:
         await self._update_session_column(name, "pi_session_id", None)
+
+    async def reset_cursor_session(self, name: str) -> None:
+        await self._update_session_column(name, "cursor_session_id", None)
+
+    async def reset_remote_session(self, name: str, engine: str) -> None:
+        column = remote_session_attr(engine)
+        if not column:
+            return
+        await self._update_session_column(name, column, None)
 
     async def close(self, name: str) -> None:
         await self._update_session_column(name, "status", "closed")
@@ -531,6 +615,7 @@ class MessageRepository:
                 (session_name, session_name, self.MAX_MESSAGES_PER_SESSION),
             )
             self.conn.commit()
+        await notify_message_written(self.conn)
 
     def list_recent(self, session_name: str, limit: int = 40) -> list[SessionMessage]:
         rows = self.conn.execute(
@@ -664,9 +749,11 @@ def init_db() -> sqlite3.Connection:
             xmpp_password TEXT NOT NULL,
             claude_session_id TEXT,
             opencode_session_id TEXT,
+            cursor_session_id TEXT,
             active_engine TEXT DEFAULT 'pi',
             opencode_agent TEXT DEFAULT 'bridge',
             model_id TEXT DEFAULT 'glm_vllm/glm-4.7-flash',
+            vllm_base_url TEXT,
             reasoning_mode TEXT DEFAULT 'normal',
             dispatcher_jid TEXT,
             owner_jid TEXT,
@@ -762,11 +849,13 @@ def init_db() -> sqlite3.Connection:
         ("active_engine", "TEXT DEFAULT 'pi'"),
         ("opencode_agent", "TEXT DEFAULT 'bridge'"),
         ("model_id", "TEXT DEFAULT 'glm_vllm/glm-4.7-flash'"),
+        ("vllm_base_url", "TEXT"),
         ("reasoning_mode", "TEXT DEFAULT 'normal'"),
         ("dispatcher_jid", "TEXT"),
         ("owner_jid", "TEXT"),
         ("room_jid", "TEXT"),
         ("pi_session_id", "TEXT"),
+        ("cursor_session_id", "TEXT"),
     ]
     existing_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()

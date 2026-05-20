@@ -21,6 +21,16 @@ class Question:
     questions: list[dict]  # [{header, question, options: [{label, description}]}]
 
 
+@dataclass
+class PermissionRequest:
+    """A permission request from the AI/runtime."""
+
+    request_id: str
+    permission: str
+    patterns: list[str]
+    message: str | None = None
+
+
 # Type for question callback: receives Question, returns answers array
 # Each answer is a list of selected option labels (one per question, positional)
 QuestionCallback = Callable[[Question], Awaitable[list[list[str]]]]
@@ -29,8 +39,8 @@ QuestionCallback = Callable[[Question], Awaitable[list[list[str]]]]
 class Runner(Protocol):
     """A streaming runner (engine adapter)."""
 
-    def run(self, prompt: str, session_id: str | None = None) -> AsyncIterator[RunnerEvent]:
-        ...
+    def run(
+        self, prompt: str, session_id: str | None = None
+    ) -> AsyncIterator[RunnerEvent]: ...
 
-    def cancel(self) -> None:
-        ...
+    def cancel(self) -> None: ...

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Protocol
 
 from src.runners import Runner, RunnerEvent
+from src.runners.claude.config import ClaudeConfig
+from src.runners.cursor.config import CursorConfig
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
 from src.attachments import Attachment
@@ -23,6 +25,7 @@ class SessionState:
     claude_session_id: str | None
     opencode_session_id: str | None
     pi_session_id: str | None
+    cursor_session_id: str | None
     model_id: str | None
     reasoning_mode: str
     opencode_agent: str | None
@@ -38,6 +41,13 @@ class SessionStorePort(Protocol):
     async def update_opencode_session_id(self, name: str, session_id: str) -> None: ...
 
     async def update_pi_session_id(self, name: str, session_id: str) -> None: ...
+
+    async def update_cursor_session_id(self, name: str, session_id: str) -> None: ...
+
+    async def update_remote_session_id(
+        self, name: str, engine: str, session_id: str
+    ) -> None: ...
+
 
 class MessageStorePort(Protocol):
     async def add(
@@ -55,6 +65,8 @@ class RunnerFactoryPort(Protocol):
         session_name: str,
         pi_config: PiConfig | None = None,
         opencode_config: OpenCodeConfig | None = None,
+        claude_config: ClaudeConfig | None = None,
+        cursor_config: CursorConfig | None = None,
     ) -> Runner: ...
 
 

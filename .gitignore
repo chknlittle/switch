@@ -5,7 +5,8 @@ dispatchers.local.json
 .opencode/node_modules/
 .opencode/package.json
 .opencode/bun.lock
-# Local OpenCode config (commit example instead)
+# Local OpenCode config (commit opencode.example.json instead)
+opencode.json
 .opencode/opencode.json
 .opencode/opencode.jsonc
 output/

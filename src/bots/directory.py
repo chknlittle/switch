@@ -93,7 +93,7 @@ class DirectoryBot(BaseXMPPBot):
         for attempt in range(1, max_attempts + 1):
             await asyncio.sleep(delay)
             try:
-                self.connect()
+                self.reconnect_to_server()
                 self._reconnecting = False
                 return
             except Exception:
@@ -116,7 +116,7 @@ class DirectoryBot(BaseXMPPBot):
 
         # Direct dispatcher→sessions lookup (no groups indirection).
         if requested.startswith("sessions:"):
-            dispatcher_jid = requested[len("sessions:"):]
+            dispatcher_jid = requested[len("sessions:") :]
             return self._items_sessions(dispatcher_jid, owner_jid=requester_bare)
 
         # Legacy: groups + individuals (kept for backward compat).
@@ -156,7 +156,9 @@ class DirectoryBot(BaseXMPPBot):
         cfg = self.dispatchers_config.get(key) or {}
         return bool(cfg.get("direct"))
 
-    def _items_sessions(self, dispatcher_jid: str, owner_jid: str | None = None) -> DiscoItems:
+    def _items_sessions(
+        self, dispatcher_jid: str, owner_jid: str | None = None
+    ) -> DiscoItems:
         """Return sessions for a dispatcher directly (no groups indirection)."""
         items = DiscoItems()
         key = self._dispatcher_key_for_jid(dispatcher_jid)
@@ -168,7 +170,8 @@ class DirectoryBot(BaseXMPPBot):
         now = time.time()
         if (
             self._active_sessions_cache
-            and (now - self._active_sessions_cache_ts) < self.ACTIVE_SESSIONS_CACHE_TTL_S
+            and (now - self._active_sessions_cache_ts)
+            < self.ACTIVE_SESSIONS_CACHE_TTL_S
             and not owner_jid
         ):
             sessions = self._active_sessions_cache
@@ -178,7 +181,9 @@ class DirectoryBot(BaseXMPPBot):
                     owner_jid, limit=self.ACTIVE_SESSIONS_LIMIT
                 )
             else:
-                sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
+                sessions = self.sessions.list_active_recent(
+                    limit=self.ACTIVE_SESSIONS_LIMIT
+                )
                 self._active_sessions_cache = sessions
                 self._active_sessions_cache_ts = now
 
@@ -234,7 +239,9 @@ class DirectoryBot(BaseXMPPBot):
         items.add_item(JID(group_jid), name="Sessions")
         return items
 
-    def _items_individuals(self, group_jid: str, owner_jid: str | None = None) -> DiscoItems:
+    def _items_individuals(
+        self, group_jid: str, owner_jid: str | None = None
+    ) -> DiscoItems:
         items = DiscoItems()
         key = self._dispatcher_key_for_group_jid(group_jid)
 
@@ -242,7 +249,8 @@ class DirectoryBot(BaseXMPPBot):
         now = time.time()
         if (
             self._active_sessions_cache
-            and (now - self._active_sessions_cache_ts) < self.ACTIVE_SESSIONS_CACHE_TTL_S
+            and (now - self._active_sessions_cache_ts)
+            < self.ACTIVE_SESSIONS_CACHE_TTL_S
             and not owner_jid
         ):
             sessions = self._active_sessions_cache
@@ -252,7 +260,9 @@ class DirectoryBot(BaseXMPPBot):
                     owner_jid, limit=self.ACTIVE_SESSIONS_LIMIT
                 )
             else:
-                sessions = self.sessions.list_active_recent(limit=self.ACTIVE_SESSIONS_LIMIT)
+                sessions = self.sessions.list_active_recent(
+                    limit=self.ACTIVE_SESSIONS_LIMIT
+                )
                 self._active_sessions_cache = sessions
                 self._active_sessions_cache_ts = now
 

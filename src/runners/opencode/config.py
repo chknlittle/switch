@@ -7,6 +7,7 @@ dependency on OpenCodeRunner's internal constructor signature.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from src.runners.opencode.models import QuestionCallback
 
@@ -18,6 +19,8 @@ class OpenCodeConfig:
     agent: str = "bridge"
     server_url: str | None = None
     question_callback: QuestionCallback | None = None
+    permission_reply: Literal["once", "always", "reject"] = "always"
+    permission_message: str | None = None
 
     # Optional overrides (otherwise env defaults apply)
     http_timeout_s: float | None = None

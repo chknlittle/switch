@@ -161,10 +161,11 @@ Multiple orchestrators, each tied to a specific AI engine:
 |---------|--------|-------|
 | `cc@domain` | Claude Code | Opus |
 | `oc@domain` | OpenCode | GLM 4.7 Heretic |
-| `oc-gpt@domain` | OpenCode | GPT 5.2 |
+| `oc-gpt@domain` | OpenCode | GPT 5.4 |
+| `oc-gpt-55@domain` | OpenCode | GPT 5.5 |
 | `oc-glm-zen@domain` | OpenCode | GLM 4.7 (Zen) |
 | `oc-gpt-or@domain` | OpenCode | GPT 5.2 (OpenRouter) |
-| `oc-kimi-coding@domain` | OpenCode | Kimi K2.5 (Kimi for Coding) |
+| `oc-kimi-coding@domain` | OpenCode | Kimi K2.6 (Kimi for Coding) |
 
 Send any message to an orchestrator to create a new session using that engine. Each orchestrator handles:
 

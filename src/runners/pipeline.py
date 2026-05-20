@@ -17,7 +17,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Awaitable, Callable, TypeVar
+from typing import AsyncIterator, Callable, TypeVar
 
 from src.runners.base import RunState
 
@@ -43,8 +43,6 @@ async def iter_queue_pipeline(
     should_cancel: Callable[[], bool],
     idle_timeout_s: float,
     is_done: Callable[[RunState], bool],
-    is_question: Callable[[T], bool] | None = None,
-    handle_question: Callable[[T], Awaitable[None]] | None = None,
 ) -> AsyncIterator[T]:
     """Drive a queue-based runner until completion."""
 
@@ -98,11 +96,7 @@ async def iter_queue_pipeline(
         last_event_at = time.monotonic()
 
         for item in items:
-            if is_question and handle_question and is_question(item):
-                yield item
-                await handle_question(item)
-            else:
-                yield item
+            yield item
 
 
 async def iter_json_line_pipeline(

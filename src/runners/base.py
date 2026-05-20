@@ -15,6 +15,7 @@ class RunState:
 
     start_time: datetime = field(default_factory=datetime.now)
     session_id: str | None = None
+    raw_text: str = ""
     text: str = ""
     tool_count: int = 0
     tokens_in: int = 0
@@ -25,11 +26,16 @@ class RunState:
     cost: float = 0.0
     saw_result: bool = False
     saw_error: bool = False
+    terminal_error: str | None = None
     raw_output: list[str] = field(default_factory=list)
 
     # Server-mode runners can emit message events for both user and assistant.
     # Track roles by message ID so we can ignore user echoes.
     message_roles: Dict[str, str] = field(default_factory=dict)
+
+    # Track assistant message-part types by part ID so delta events can ignore
+    # non-user-visible content like reasoning traces.
+    message_part_types: Dict[str, str] = field(default_factory=dict)
 
     # Track seen tool IDs to deduplicate SSE updates for the same tool call.
     seen_tool_ids: set = field(default_factory=set)

@@ -15,6 +15,40 @@ from src.runners.ports import RunnerEvent
 Event = RunnerEvent
 
 
+def _assistant_terminal_error(message: object) -> str | None:
+    """Extract a user-visible error from a Pi assistant message."""
+    if not isinstance(message, dict):
+        return None
+
+    inner = message.get("message")
+    msg = inner if isinstance(inner, dict) else message
+    if msg.get("role") != "assistant":
+        return None
+
+    stop = msg.get("stopReason")
+    if stop not in ("error", "aborted"):
+        return None
+
+    err = msg.get("errorMessage")
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    if err is not None:
+        return str(err)
+    if stop == "aborted":
+        return "Request was aborted"
+    return "Assistant request failed"
+
+
+def _terminal_error_from_messages(messages: object) -> str | None:
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        err = _assistant_terminal_error(message)
+        if err:
+            return err
+    return None
+
+
 class PiEventProcessor:
     def __init__(
         self,
@@ -56,9 +90,17 @@ class PiEventProcessor:
             pass
 
         if ame_type == "error":
-            error = ame.get("error", "Pi error")
+            err_obj = ame.get("error")
+            error = ame.get("errorMessage")
+            if isinstance(err_obj, dict):
+                error = error or err_obj.get("errorMessage")
+            if not error:
+                error = _assistant_terminal_error(
+                    event.get("message") if isinstance(event.get("message"), dict) else {}
+                )
             state.saw_error = True
-            return ("error", str(error))
+            state.terminal_error = str(error or "Pi error")
+            return ("error", state.terminal_error)
 
         return None
 
@@ -117,15 +159,33 @@ class PiEventProcessor:
 
         return None
 
-    def _handle_agent_end(self, event: dict, state: RunState) -> Event | None:
+    def _record_terminal_error(self, error: str, state: RunState) -> Event:
+        state.saw_error = True
+        state.terminal_error = error
+        self._log_to_file(f"[error] {error}\n")
+        return ("error", error)
+
+    def _handle_agent_end(self, event: dict, state: RunState) -> list[Event]:
         state.saw_result = True
 
         if self._log_response and state.text:
             self._log_response(state.text)
 
-        # Stats come from get_session_stats — we'll inject them from the runner.
-        # For now, build a minimal result payload.
-        return None  # Runner handles stats separately.
+        events: list[Event] = []
+        if not state.text:
+            error = _terminal_error_from_messages(event.get("messages"))
+            if error:
+                events.append(self._record_terminal_error(error, state))
+        return events
+
+    def _handle_message_end(self, event: dict, state: RunState) -> list[Event]:
+        events: list[Event] = []
+        if state.text:
+            return events
+        error = _assistant_terminal_error(event.get("message"))
+        if error:
+            events.append(self._record_terminal_error(error, state))
+        return events
 
     def make_result(self, state: RunState, stats: dict | None = None) -> dict:
         if self._log_response and state.text:
@@ -190,9 +250,10 @@ class PiEventProcessor:
             return [result] if result else []
 
         if event_type == "agent_end":
-            self._handle_agent_end(event, state)
-            # Result is emitted by the runner after fetching stats.
-            return []
+            return self._handle_agent_end(event, state)
+
+        if event_type == "message_end":
+            return self._handle_message_end(event, state)
 
         if event_type == "extension_ui_request":
             # Return a signal so the runner can auto-respond via stdin.

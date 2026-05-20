@@ -92,11 +92,14 @@ def coerce_event(payload: dict) -> dict | None:
             part = props.get("part")
             if isinstance(part, dict):
                 part_type = part.get("type")
+                part_id = part.get("id")
                 if part_type == "text":
                     return {
                         "type": "message_part",
                         "sessionID": part.get("sessionID"),
                         "messageID": part.get("messageID"),
+                        "partID": part_id,
+                        "partType": part_type,
                         "text": part.get("text", ""),
                     }
                 if part_type == "step-start":
@@ -108,6 +111,25 @@ def coerce_event(payload: dict) -> dict | None:
                     return {
                         "type": "step_finish",
                         "part": part,
+                    }
+                if part_type in {"tool", "tool_use"}:
+                    return {"type": "tool_use", "part": part}
+                if part_type in {
+                    "tool_result",
+                    "tool-result",
+                    "tool.output",
+                    "tool_output",
+                    "tool.response",
+                    "tool_response",
+                }:
+                    return {"type": "tool_result", "part": part}
+                if isinstance(part_type, str) and isinstance(part_id, str) and part_id:
+                    return {
+                        "type": "message_part_meta",
+                        "sessionID": part.get("sessionID"),
+                        "messageID": part.get("messageID"),
+                        "partID": part_id,
+                        "partType": part_type,
                     }
 
         if event_type == "message.part.delta":
@@ -124,6 +146,7 @@ def coerce_event(payload: dict) -> dict | None:
                     "type": "message_part_delta",
                     "sessionID": props.get("sessionID"),
                     "messageID": message_id,
+                    "partID": props.get("partID"),
                     "text": delta,
                 }
 

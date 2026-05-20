@@ -109,6 +109,14 @@ OC_KIMI_CODING_JID=oc-kimi-coding@your.xmpp.server
 OC_KIMI_CODING_PASSWORD=
 ```
 
+### OpenCode provider config
+
+`opencode.json` is local-only (gitignored). Copy the example and point provider `baseURL`s at your vLLM/Spark hosts:
+
+```bash
+cp opencode.example.json opencode.json
+```
+
 ## ejabberd Setup
 
 ### Create Dispatcher Account

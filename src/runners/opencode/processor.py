@@ -10,11 +10,12 @@ This module focuses on:
 from __future__ import annotations
 
 import os
+import re
 from typing import Callable
 
 from src.runners.base import RunState
 from src.runners.opencode.events import coerce_event
-from src.runners.opencode.models import Event, Question
+from src.runners.opencode.models import Event, PermissionRequest, Question
 from src.runners.tool_logging import (
     format_tool_input_preview,
     should_log_tool_input,
@@ -34,6 +35,22 @@ class OpenCodeEventProcessor:
         self._log_response = log_response
         self._model = model
 
+    @staticmethod
+    def _sanitize_assistant_text(text: str) -> str:
+        if not text:
+            return ""
+
+        # Some local models leak internal reasoning inside <think> blocks, or
+        # emit an orphaned closing tag with the visible answer after it.
+        text = re.sub(
+            r"<think>.*?</think>\s*", "", text, flags=re.IGNORECASE | re.DOTALL
+        )
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[1]
+        if "<think>" in text:
+            text = text.split("<think>", 1)[0]
+        return text.lstrip()
+
     def _handle_step_start(self, event: dict, state: RunState) -> Event | None:
         session_id = event.get("sessionID")
         if isinstance(session_id, str) and session_id:
@@ -44,6 +61,9 @@ class OpenCodeEventProcessor:
     def _apply_text_update(self, text: str, state: RunState) -> Event | None:
         if not text:
             return None
+
+        state.raw_text = text
+        text = self._sanitize_assistant_text(text)
 
         # SSE sends full accumulated text, not deltas - extract only the new part.
         if text.startswith(state.text):
@@ -75,6 +95,18 @@ class OpenCodeEventProcessor:
             state.message_roles[message_id] = role
         return None
 
+    def _handle_message_part_meta(self, event: dict, state: RunState) -> Event | None:
+        part_id = event.get("partID")
+        part_type = event.get("partType")
+        if (
+            isinstance(part_id, str)
+            and part_id
+            and isinstance(part_type, str)
+            and part_type
+        ):
+            state.message_part_types[part_id] = part_type
+        return None
+
     def _handle_message_part_delta(self, event: dict, state: RunState) -> Event | None:
         message_id = event.get("messageID")
         role = (
@@ -85,12 +117,30 @@ class OpenCodeEventProcessor:
         if role != "assistant":
             return None
 
+        part_id = event.get("partID")
+        part_type = (
+            state.message_part_types.get(part_id)
+            if isinstance(part_id, str) and part_id
+            else None
+        )
+        if part_type is not None and part_type != "text":
+            return None
+
         text = event.get("text", "")
         if not isinstance(text, str) or not text:
             return None
 
-        state.text += text
-        return ("text", text)
+        state.raw_text += text
+        visible_text = self._sanitize_assistant_text(state.raw_text)
+        if not visible_text.startswith(state.text):
+            state.text = visible_text
+            return ("text", visible_text)
+
+        delta = visible_text[len(state.text) :]
+        state.text = visible_text
+        if not delta:
+            return None
+        return ("text", delta)
 
     def _handle_tool_use(self, event: dict, state: RunState) -> Event | None:
         part = event.get("part", {})
@@ -187,7 +237,7 @@ class OpenCodeEventProcessor:
 
             # Generic fallback: show a compact preview when available so tool
             # progress stays informative even when input logging is disabled.
-            if title is None and tool_input_obj is not None:
+            if title is None and description is None and tool_input_obj is not None:
                 preview = format_tool_input_preview(str(tool), tool_input_obj)
                 if _is_meaningful_preview(preview):
                     title = _clean_label(preview, max_len=100)
@@ -197,6 +247,29 @@ class OpenCodeEventProcessor:
                 description = None
 
             return title, description
+
+        def _extract_task_ref(part_obj: dict, tool_state_obj: object) -> str | None:
+            if str(tool) != "task":
+                return None
+
+            candidates: list[object] = [tool_state_obj, part_obj]
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+
+                for key in ("task_id", "taskId"):
+                    value = candidate.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return f"task {value.strip()}"
+
+                metadata = candidate.get("metadata")
+                if isinstance(metadata, dict):
+                    for key in ("sessionId", "sessionID", "task_id", "taskId"):
+                        value = metadata.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return f"child {value.strip()}"
+
+            return None
 
         # Deduplicate: SSE can send multiple updates for the same tool call.
         # Tool input/args often arrives on a later update, so allow a follow-up
@@ -223,6 +296,9 @@ class OpenCodeEventProcessor:
             extra_bits.append(title)
         if description:
             extra_bits.append(description)
+        task_ref = _extract_task_ref(part, tool_state)
+        if task_ref:
+            extra_bits.append(task_ref)
         extra = " | ".join(extra_bits)
         desc = f"[tool:{tool} {extra}]" if extra else f"[tool:{tool}]"
         has_rich_header = bool(extra)
@@ -320,6 +396,26 @@ class OpenCodeEventProcessor:
             )
 
         pieces: list[str] = []
+
+        if tool_str == "task":
+            task_ref = None
+            if isinstance(state_obj, dict):
+                metadata = state_obj.get("metadata")
+                if isinstance(metadata, dict):
+                    for key in ("sessionId", "sessionID", "task_id", "taskId"):
+                        value = metadata.get(key)
+                        if isinstance(value, str) and value.strip():
+                            task_ref = value.strip()
+                            break
+            if task_ref is None:
+                for key in ("task_id", "taskId"):
+                    value = _pick(part, (key,)) or _pick(state_obj, (key,))
+                    if isinstance(value, str) and value.strip():
+                        task_ref = value.strip()
+                        break
+            if task_ref:
+                pieces.append(f"child={task_ref}")
+
         if exit_code is not None:
             pieces.append(f"exit={exit_code}")
 
@@ -391,6 +487,33 @@ class OpenCodeEventProcessor:
         question = Question(request_id=request_id, questions=questions)
         self._log_to_file(f"\n[QUESTION] {request_id}: {questions}\n")
         return ("question", question)
+
+    def _handle_permission_request(self, event: dict, state: RunState) -> Event | None:
+        request_id = event.get("requestID") or event.get("id")
+        permission = event.get("permission")
+        patterns = event.get("patterns")
+        message = event.get("message")
+
+        if not isinstance(request_id, str) or not request_id:
+            self._log_to_file(f"Permission event missing request ID: {event}\n")
+            return None
+        if not isinstance(permission, str) or not permission:
+            permission = "permission"
+
+        normalized_patterns: list[str] = []
+        if isinstance(patterns, list):
+            normalized_patterns = [p for p in patterns if isinstance(p, str) and p]
+
+        request = PermissionRequest(
+            request_id=request_id,
+            permission=permission,
+            patterns=normalized_patterns,
+            message=message if isinstance(message, str) and message else None,
+        )
+        self._log_to_file(
+            f"\n[PERMISSION] {request_id}: {permission} {normalized_patterns}\n"
+        )
+        return ("permission", request)
 
     def make_result(self, state: RunState) -> dict:
         if self._log_response and state.text:
@@ -481,13 +604,21 @@ class OpenCodeEventProcessor:
             return self._handle_error(event, state)
         if event_type in {"question.asked", "question"}:
             return self._handle_question(event, state)
+        if event_type == "permission.requested":
+            return self._handle_permission_request(event, state)
         if event_type == "message_meta":
             return self._handle_message_meta(event, state)
+        if event_type == "message_part_meta":
+            return self._handle_message_part_meta(event, state)
         if event_type == "message_part_delta":
             return self._handle_message_part_delta(event, state)
 
         # Server-mode streams often send message events rather than "text".
         if event_type == "message_part":
+            part_id = event.get("partID")
+            if isinstance(part_id, str) and part_id:
+                state.message_part_types[part_id] = "text"
+
             message_id = event.get("messageID")
             role = (
                 state.message_roles.get(message_id)

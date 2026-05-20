@@ -48,6 +48,8 @@ from src.helpers import (
     log_activity,
 )
 from src.runners import Runner, create_runner
+from src.runners.claude.config import ClaudeConfig
+from src.runners.cursor.config import CursorConfig
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
 from src.attachments import Attachment, AttachmentStore
@@ -179,6 +181,7 @@ class SessionBot(BaseXMPPBot):
                 claude_session_id=s.claude_session_id,
                 opencode_session_id=s.opencode_session_id,
                 pi_session_id=s.pi_session_id,
+                cursor_session_id=s.cursor_session_id,
                 model_id=s.model_id,
                 reasoning_mode=s.reasoning_mode,
                 opencode_agent=s.opencode_agent,
@@ -195,6 +198,14 @@ class SessionBot(BaseXMPPBot):
 
         async def update_opencode_session_id(self, name: str, session_id: str) -> None:
             await self._repo.update_opencode_session_id(name, session_id)
+
+        async def update_cursor_session_id(self, name: str, session_id: str) -> None:
+            await self._repo.update_cursor_session_id(name, session_id)
+
+        async def update_remote_session_id(
+            self, name: str, engine: str, session_id: str
+        ) -> None:
+            await self._repo.update_remote_session_id(name, engine, session_id)
 
     class _MessagesAdapter(MessageStorePort):
         def __init__(self, repo: MessageRepository):
@@ -215,6 +226,8 @@ class SessionBot(BaseXMPPBot):
             session_name: str,
             pi_config: PiConfig | None = None,
             opencode_config: OpenCodeConfig | None = None,
+            claude_config: ClaudeConfig | None = None,
+            cursor_config: CursorConfig | None = None,
         ) -> Runner:
             return create_runner(
                 engine,
@@ -223,6 +236,8 @@ class SessionBot(BaseXMPPBot):
                 session_name=session_name,
                 pi_config=pi_config,
                 opencode_config=opencode_config,
+                claude_config=claude_config,
+                cursor_config=cursor_config,
             )
 
     class _HistoryAdapter(HistoryPort):
@@ -293,6 +308,19 @@ class SessionBot(BaseXMPPBot):
         )
 
     def _build_delegation_startup_context(self) -> str:
+        session = self.sessions.get(self.session_name)
+        if session and session.dispatcher_jid and self.manager:
+            dispatcher_jid = session.dispatcher_jid.split("/", 1)[0]
+            for cfg in (self.manager.dispatchers_config or {}).values():
+                if not isinstance(cfg, dict):
+                    continue
+                jid = str(cfg.get("jid") or "").split("/", 1)[0]
+                if jid != dispatcher_jid:
+                    continue
+                if cfg.get("delegation_context") is False:
+                    return ""
+                break
+
         dispatchers = self._available_delegate_dispatchers()
         if not dispatchers:
             return ""
@@ -379,7 +407,7 @@ class SessionBot(BaseXMPPBot):
             if self.shutting_down:
                 return
             try:
-                self.connect()
+                self.reconnect_to_server()
             except Exception:
                 self.log.warning("Reconnect connect() failed", exc_info=True)
                 continue
@@ -627,8 +655,8 @@ class SessionBot(BaseXMPPBot):
         """Best-effort: ask Helga vLLM to stop active inference.
 
         This is intentionally conservative:
-        - Only triggers for Pi sessions using vLLM-backed models
-        - Only triggers when the selected model is our vLLM-backed GLM provider
+        - Only triggers for sessions using vLLM-backed models (Pi, OpenCode, vllm-direct)
+        - Only triggers for known vLLM-backed models (glm_vllm/, heretic_local/, heretic-v2, etc.)
         - Cooldown + single in-flight task to avoid request storms
         """
 
@@ -640,10 +668,21 @@ class SessionBot(BaseXMPPBot):
         if not session:
             return
         engine = (session.active_engine or "").strip().lower()
-        if engine != "pi":
-            return
         model_id = (session.model_id or "").strip()
-        if not model_id.startswith("glm_vllm/"):
+
+        # Check if this is a vLLM-backed engine
+        vllm_engines = {"pi", "opencode", "vllm-direct"}
+        if engine not in vllm_engines:
+            return
+
+        # Check if this is a vLLM-backed model
+        is_vllm_model = (
+            model_id.startswith("glm_vllm/")
+            or model_id.startswith("heretic_local/")
+            or "heretic" in model_id.lower()
+            or model_id.startswith("qwen35-")  # Heretic models often use qwen35 prefix
+        )
+        if not is_vllm_model:
             return
 
         # Avoid spamming this if multiple cancellation paths fire.

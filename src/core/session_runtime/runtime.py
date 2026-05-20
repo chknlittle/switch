@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import Awaitable, Callable, cast
 
 from src.attachments import Attachment
+from src.engines import ralph_engine_names, remote_session_id_for, runtime_engine_names
 from src.runners import Question, Runner
+from src.runners.claude.config import ClaudeConfig
+from src.runners.cursor.config import CursorConfig
 from src.runners.opencode.config import OpenCodeConfig
 from src.runners.pi.config import PiConfig
 
@@ -118,16 +121,19 @@ class SessionRuntime:
             "claude": 0,
             "pi": 0,
             "opencode": 0,
+            "cursor": 0,
         }
         self._usage_cost_total: dict[str, float] = {
             "claude": 0.0,
             "pi": 0.0,
             "opencode": 0.0,
+            "cursor": 0.0,
         }
         self._last_remote_session_id: dict[str, str | None] = {
             "claude": None,
             "pi": None,
             "opencode": None,
+            "cursor": None,
         }
 
         # Throttle last_active writes. SQLite commits can become a bottleneck under
@@ -902,7 +908,7 @@ class SessionRuntime:
     ) -> "SessionRuntime._RalphIterationResult":
         result = SessionRuntime._RalphIterationResult()
         engine = (cfg.force_engine or session.active_engine or "pi").strip().lower()
-        if engine not in {"claude", "pi", "opencode", "vllm-direct"}:
+        if engine not in ralph_engine_names():
             log.warning("Ralph: engine %r not supported, falling back to pi", engine)
             engine = "pi"
 
@@ -990,6 +996,7 @@ class SessionRuntime:
                 working_dir=self.working_dir,
                 output_dir=self.output_dir,
                 session_name=self.session_name,
+                claude_config=ClaudeConfig(model=session.model_id or None),
             )
         elif engine == "opencode":
             self.runner = self._runner_factory.create(
@@ -1012,6 +1019,14 @@ class SessionRuntime:
                 session_name=self.session_name,
                 pi_config=pi_config or PiConfig(model=session.model_id or None),
             )
+        elif engine == "cursor":
+            self.runner = self._runner_factory.create(
+                "cursor",
+                working_dir=self.working_dir,
+                output_dir=self.output_dir,
+                session_name=self.session_name,
+                cursor_config=CursorConfig(model=session.model_id or "composer-2.5"),
+            )
         elif engine == "vllm-direct":
             self.runner = self._runner_factory.create(
                 "vllm-direct",
@@ -1025,28 +1040,17 @@ class SessionRuntime:
 
     @staticmethod
     def _session_id_for_engine(engine: str, session: SessionState) -> str | None:
-        if engine == "claude":
-            return session.claude_session_id
-        if engine == "opencode":
-            return session.opencode_session_id
-        if engine == "pi":
-            return session.pi_session_id
-        return None
+        return remote_session_id_for(engine, session)
 
     async def _save_session_id(self, engine: str, session_id: str) -> None:
-        if engine == "claude":
-            await self._sessions.update_claude_session_id(self.session_name, session_id)
-        elif engine == "opencode":
-            await self._sessions.update_opencode_session_id(
-                self.session_name, session_id
-            )
-        elif engine == "pi":
-            await self._sessions.update_pi_session_id(self.session_name, session_id)
+        await self._sessions.update_remote_session_id(
+            self.session_name, engine, session_id
+        )
 
     async def _run_engine(
         self, *, engine: str, session: SessionState, prompt: str
     ) -> None:
-        if engine not in {"claude", "pi", "opencode", "vllm-direct"}:
+        if engine not in runtime_engine_names():
             await self._emit(OutboundMessage(f"Unknown engine '{engine}'."))
             return
         await self._run_engine_generic(engine, session, prompt)

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from src.runners.base import BaseRunner, RunState
+from src.runners.claude.config import ClaudeConfig
 from src.runners.claude.processor import ClaudeEventProcessor
 from src.runners.pipeline import JSONLineStats, iter_json_line_pipeline
 from src.runners.subprocess_transport import SubprocessTransport
@@ -36,8 +37,10 @@ class ClaudeRunner(BaseRunner):
         working_dir: str,
         output_dir: Path,
         session_name: str | None = None,
+        config: ClaudeConfig | None = None,
     ):
         super().__init__(working_dir, output_dir, session_name)
+        self._config = config or ClaudeConfig()
         self._transport = SubprocessTransport()
         self._processor = ClaudeEventProcessor(
             log_to_file=self._log_to_file,
@@ -51,9 +54,10 @@ class ClaudeRunner(BaseRunner):
         extra_args: list[str] | None = None,
     ) -> list[str]:
         """Build the claude command line."""
+        model = (self._config.model or "").strip() or "opus"
         cmd = [
             "claude", "-p", prompt,
-            "--model", "opus",
+            "--model", model,
             "--output-format", "stream-json",
             "--verbose",
             "--dangerously-skip-permissions",
