@@ -253,7 +253,23 @@ journalctl --user -u switch -f   # View logs
 scripts/run.sh                   # Run directly (not via systemd)
 ```
 
-## Verification
+## Smoke harness (offline)
+
+After refactors, run quick import/wiring checks (no XMPP required):
+
+```bash
+./scripts/smoke.sh
+```
+
+Optional bridge wiring (temp DB, single-instance lock, `SessionManager` construct — still no XMPP):
+
+```bash
+./scripts/smoke.sh --with-bridge
+```
+
+Exits non-zero on the first failure with `PASS`/`FAIL` per check.
+
+## Verification (live XMPP)
 
 1. Start Switch
 2. Send a message to `oc@your.xmpp.server` from your XMPP client
