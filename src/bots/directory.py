@@ -294,6 +294,8 @@ class DirectoryBot(BaseXMPPBot):
 
     def notify_sessions_changed(self, dispatcher_jid: str | None = None) -> None:
         """Publish a change notification for session lists."""
+        # Session create/kill must not reuse a cached list in pubsub payloads.
+        self._active_sessions_cache_ts = 0.0
         if dispatcher_jid:
             key = self._dispatcher_key_for_jid(dispatcher_jid)
             if key:
