@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from pathlib import Path
 from typing import AsyncIterator, cast
 
@@ -23,6 +22,7 @@ from src.runners.opencode.models import (
 from src.runners.opencode.processor import OpenCodeEventProcessor
 from src.runners.opencode.transport import OpenCodeTransport, build_http_timeout
 from src.runners.pipeline import iter_queue_pipeline
+from src.runners.timeouts import post_message_idle_timeout_s
 
 log = logging.getLogger("opencode")
 
@@ -248,12 +248,9 @@ class OpenCodeRunner(BaseRunner):
                     event_queue=event_queue,
                 )
 
-                if self._config.post_message_idle_timeout_s is not None:
-                    idle_timeout_s = float(self._config.post_message_idle_timeout_s)
-                else:
-                    idle_timeout_s = float(
-                        os.getenv("OPENCODE_POST_MESSAGE_IDLE_TIMEOUT_S", "30")
-                    )
+                idle_timeout_s = post_message_idle_timeout_s(
+                    override=self._config.post_message_idle_timeout_s,
+                )
 
                 async for event in iter_queue_pipeline(
                     event_queue=event_queue,

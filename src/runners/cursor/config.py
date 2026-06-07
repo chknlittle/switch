@@ -12,7 +12,8 @@ class CursorConfig:
     cursor_bin: str | None = None
     auth_method: str = "cursor_login"
     permission_option_id: str = "allow-once"
-    request_timeout_s: float = 600.0
+    control_plane_timeout_s: float | None = None
+    post_message_idle_timeout_s: float | None = None
 
     def resolve_bin(self) -> str:
         return self.cursor_bin or os.getenv("CURSOR_AGENT_BIN", "agent")

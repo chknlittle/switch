@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
 from src.runners.base import BaseRunner, RunState
-from src.runners.cursor.acp import CursorACPClient
 from src.runners.cursor.config import CursorConfig
+from src.runners.cursor.events import extract_session_id
+from src.runners.cursor.processor import CursorEventProcessor
+from src.runners.cursor.transport import CursorACPTransport
+from src.runners.pipeline import iter_queue_pipeline
 from src.runners.ports import RunnerEvent
+from src.runners.timeouts import post_message_idle_timeout_s
 
 log = logging.getLogger("cursor.runner")
 
@@ -30,153 +33,95 @@ class CursorACPRunner(BaseRunner):
     ):
         super().__init__(working_dir, output_dir, session_name)
         self._config = config or CursorConfig()
-        self._client: CursorACPClient | None = None
-        self._cancelled = False
+        self._transport = CursorACPTransport(self._config)
+        self._processor = CursorEventProcessor(log_response=self._log_response)
 
     def _argv(self) -> list[str]:
         return [self._config.resolve_bin(), "--model", self._config.resolve_model(), "acp"]
 
-    async def _ensure_started(self) -> CursorACPClient:
-        client = CursorACPClient(self._argv(), cwd=self.working_dir)
-        await client.start()
-        timeout = self._config.request_timeout_s
-        await client.request(
-            "initialize",
-            {
-                "protocolVersion": 1,
-                "clientCapabilities": {
-                    "fs": {"readTextFile": False, "writeTextFile": False},
-                    "terminal": False,
-                },
-                "clientInfo": {"name": "switch-cursor-acp", "version": "0.1.0"},
-            },
-            timeout_s=timeout,
-        )
-        await client.request(
-            "authenticate",
-            {"methodId": self._config.auth_method},
-            timeout_s=timeout,
-        )
-        self._client = client
-        return client
-
-    async def _open_session(self, client: CursorACPClient, session_id: str | None) -> str:
-        timeout = self._config.request_timeout_s
-        params: dict[str, Any] = {"cwd": self.working_dir, "mcpServers": []}
-        if session_id:
-            # Cursor docs advertise session/load but are sparse on payload details.
-            # If the local CLI rejects this shape, fall back to a fresh session.
-            try:
-                result = await client.request(
-                    "session/load",
-                    {"sessionId": session_id, **params},
-                    timeout_s=timeout,
-                )
-                if isinstance(result, dict):
-                    return session_id
-            except Exception:
-                log.warning("Cursor session/load failed; starting a new session", exc_info=True)
-        result = await client.request("session/new", params, timeout_s=timeout)
-        if not isinstance(result, dict) or not result.get("sessionId"):
-            raise RuntimeError(f"Cursor session/new did not return sessionId: {result!r}")
-        return str(result["sessionId"])
-
-    async def _permission_auto_allow(self, client: CursorACPClient, msg: dict[str, Any]) -> None:
-        msg_id = msg.get("id")
-        if msg_id is None:
-            return
-        await client.respond(
-            int(msg_id),
-            {"outcome": {"outcome": "selected", "optionId": self._config.permission_option_id}},
-        )
-
-    def _tool_summary(self, update: dict[str, Any]) -> str | None:
-        kind = update.get("sessionUpdate")
-        if kind in {"tool_call", "tool_call_update", "tool_call_started"}:
-            name = update.get("name") or update.get("toolName") or update.get("title") or "tool"
-            return f"Cursor: {name}"
-        if kind in {"command_started", "command_update"}:
-            cmd = update.get("command") or update.get("text") or "command"
-            return f"Cursor shell: {cmd}"
-        return None
-
     async def run(self, prompt: str, session_id: str | None = None) -> AsyncIterator[Event]:
-        state = RunState(start_time=datetime.now())
-        self._cancelled = False
+        state = RunState()
         self._log_prompt(prompt)
-        client: CursorACPClient | None = None
+
         prompt_task: asyncio.Task | None = None
+        reader_task: asyncio.Task | None = None
+        cursor_session_id: str | None = None
+
         try:
-            client = await self._ensure_started()
-            cursor_session_id = await self._open_session(client, session_id)
+            client = await self._transport.start(argv=self._argv(), cwd=self.working_dir)
+            cursor_session_id = await self._transport.open_session(
+                client,
+                session_id=session_id,
+                cwd=self.working_dir,
+            )
             state.session_id = cursor_session_id
             yield ("session_id", cursor_session_id)
 
-            prompt_task = asyncio.create_task(
-                client.request(
-                    "session/prompt",
-                    {"sessionId": cursor_session_id, "prompt": [{"type": "text", "text": prompt}]},
-                    timeout_s=self._config.request_timeout_s,
-                )
+            prompt_task = self._transport.start_prompt(
+                client,
+                session_id=cursor_session_id,
+                prompt=prompt,
+            )
+            reader_task = self._transport.reader_task()
+            if reader_task is None:
+                raise RuntimeError("Cursor ACP stdout reader did not start")
+
+            idle_timeout_s = post_message_idle_timeout_s(
+                override=self._config.post_message_idle_timeout_s,
             )
 
-            while True:
-                if self._cancelled:
-                    yield ("cancelled", None)
-                    return
-                if prompt_task.done() and client.events.empty():
-                    result = prompt_task.result()
-                    state.saw_result = True
-                    if state.text:
-                        self._log_response(state.text)
-                    yield (
-                        "result",
-                        {
-                            "duration_s": state.duration_s,
-                            "session_id": cursor_session_id,
-                            "stop_reason": result.get("stopReason") if isinstance(result, dict) else None,
-                        },
-                    )
-                    return
-                try:
-                    msg = await asyncio.wait_for(client.events.get(), timeout=0.25)
-                except asyncio.TimeoutError:
+            def parse_event(msg: dict, run_state: RunState) -> Event | list[Event] | None:
+                assert cursor_session_id is not None
+                return self._processor.parse_event(
+                    msg,
+                    run_state,
+                    cursor_session_id=cursor_session_id,
+                )
+
+            async for event in iter_queue_pipeline(
+                event_queue=client.events,
+                session_id=cursor_session_id,
+                state=state,
+                parse_event=parse_event,
+                extract_session_id=extract_session_id,
+                sse_task=reader_task,
+                message_task=prompt_task,
+                should_cancel=lambda: self._transport.cancelled,
+                idle_timeout_s=idle_timeout_s,
+                is_done=lambda s: s.saw_result or s.saw_error,
+            ):
+                event_type, data = event
+                if event_type == "permission":
+                    await self._transport.allow_permission(data)  # type: ignore[arg-type]
                     continue
-                method = msg.get("method")
-                if method == "session/request_permission":
-                    await self._permission_auto_allow(client, msg)
-                    continue
-                if method != "session/update":
-                    continue
-                params = msg.get("params") or {}
-                if params.get("sessionId") not in {None, cursor_session_id}:
-                    continue
-                update = params.get("update") or {}
-                if update.get("sessionUpdate") == "agent_message_chunk":
-                    text = ((update.get("content") or {}).get("text") or "")
-                    if text:
-                        state.text += text
-                        yield ("text", text)
-                elif update.get("sessionUpdate") == "agent_thought_chunk":
-                    # Thought chunks are not user-visible in Switch chat.
-                    continue
-                else:
-                    summary = self._tool_summary(update)
-                    if summary:
-                        yield ("tool", summary)
+                yield event
+
+            if self._transport.cancelled:
+                yield ("cancelled", None)
+                return
+
+            if prompt_task.cancelled():
+                yield ("cancelled", None)
+                return
+
+            exc = prompt_task.exception()
+            if exc is not None:
+                raise exc
+
+            if not state.saw_result and not state.saw_error:
+                state.saw_result = True
+                yield (
+                    "result",
+                    self._processor.make_result(state, prompt_task.result()),
+                )
         except Exception as e:
             log.exception("Cursor ACP runner error")
             yield ("error", str(e))
         finally:
-            if prompt_task and not prompt_task.done():
-                prompt_task.cancel()
+            await self._transport.cleanup(prompt_task=prompt_task)
 
     def cancel(self) -> None:
-        self._cancelled = True
-        if self._client:
-            self._client.terminate()
+        self._transport.cancel()
 
     async def cleanup(self) -> None:
-        if self._client:
-            await self._client.close()
-            self._client = None
+        await self._transport.cleanup(prompt_task=None)

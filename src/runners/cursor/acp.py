@@ -22,7 +22,7 @@ class CursorACPClient:
         self._stderr_task: asyncio.Task | None = None
 
     async def start(self) -> None:
-        # Cursor ACP can emit very large single-line JSON-RPC messages
+# Cursor ACP can emit very large single-line JSON-RPC messages
         # (e.g. available commands, tool payloads). asyncio's default
         # StreamReader limit is 64 KiB, which raises LimitOverrunError before
         # readline() sees the newline. Keep this comfortably above expected ACP
@@ -37,6 +37,10 @@ class CursorACPClient:
         )
         self._stdout_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
+
+    @property
+    def reader_task(self) -> asyncio.Task | None:
+        return self._stdout_task
 
     async def _read_stdout(self) -> None:
         assert self.proc and self.proc.stdout
@@ -70,7 +74,9 @@ class CursorACPClient:
                 return
             log.info("Cursor ACP stderr: %s", line.decode(errors="replace").rstrip())
 
-    async def request(self, method: str, params: dict[str, Any], *, timeout_s: float) -> Any:
+    async def request(
+        self, method: str, params: dict[str, Any], *, timeout_s: float | None
+    ) -> Any:
         assert self.proc and self.proc.stdin
         msg_id = self._next_id
         self._next_id += 1
@@ -79,6 +85,8 @@ class CursorACPClient:
         payload = {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params}
         self.proc.stdin.write((json.dumps(payload) + "\n").encode())
         await self.proc.stdin.drain()
+        if timeout_s is None:
+            return await fut
         return await asyncio.wait_for(fut, timeout=timeout_s)
 
     async def respond(self, msg_id: int, result: dict[str, Any]) -> None:

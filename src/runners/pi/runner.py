@@ -12,6 +12,7 @@ from src.runners.base import BaseRunner, RunState
 from src.runners.pi.config import PiConfig
 from src.runners.pi.processor import PiEventProcessor
 from src.runners.ports import RunnerEvent
+from src.runners.timeouts import runner_idle_stall_timeout_s
 
 log = logging.getLogger("pi")
 
@@ -219,7 +220,7 @@ class PiRunner(BaseRunner):
 
             # Use a generous per-read timeout.  If the model is thinking or
             # executing a tool we don't want to kill the session — just warn.
-            read_timeout = 300.0
+            read_timeout = runner_idle_stall_timeout_s()
 
             try:
                 raw = await asyncio.wait_for(
