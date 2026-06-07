@@ -252,10 +252,14 @@ async def create_session(
 
     bot.send_reply(announce)
 
+    # Notify as soon as the session exists, before the initial prompt is processed.
+    # Otherwise clients only learn about the new session after the agent finishes,
+    # while manual dispatcher switching sees it immediately via disco#items.
+    manager.notify_directory_sessions_changed(dispatcher_jid=dispatcher_jid)
+
     if message:
         await bot.process_message(message)
 
-    manager.notify_directory_sessions_changed(dispatcher_jid=dispatcher_jid)
     return name
 
 
