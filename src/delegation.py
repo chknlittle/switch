@@ -1,13 +1,11 @@
-"""Internal delegation helpers for Switch sessions.
+"""Internal delegation helpers for Switch sessions and scripts.
 
-Supports conversational delegation requests and DB-backed loopback waits.
+DB-backed loopback waits used by ask-agent.py / spawn-session.py.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
-import re
 import secrets
 import sqlite3
 import time
@@ -18,77 +16,12 @@ from src.utils import BaseXMPPBot, get_xmpp_config, run_ejabberdctl
 
 
 @dataclass(frozen=True)
-class DelegationIntent:
-    dispatcher_name: str
-    prompt: str
-    trigger: str
-
-
-@dataclass(frozen=True)
 class DelegationResult:
     token: str
     session_name: str
     user_message_id: int
     assistant_message_id: int
     content: str
-
-
-@dataclass(frozen=True)
-class IntentRule:
-    pattern: re.Pattern[str]
-    trigger: str
-    requires_target: bool = False
-
-
-_ALIAS_TO_DISPATCHER: dict[str, str] = {
-    "codex": "oc-codex",
-    "gemini": "oc-gemini",
-    "gpt": "oc-gpt",
-    "chatgpt": "oc-gpt",
-    "claude": "cc",
-    "heretic": "heretic",
-    "glm": "qwen",
-    "kimi": "oc-kimi-coding",
-    "zen": "oc-glm-zen",
-}
-
-_LEADING_FILLERS_RE = re.compile(
-    r"^(?:(?:ok(?:ay)?|alright|all\s+right|hey|yo|well|so|right|hmm|um|uh)[,\s]+)+",
-    re.IGNORECASE,
-)
-
-_INTENT_RULES: tuple[IntentRule, ...] = (
-    IntentRule(
-        pattern=re.compile(
-            r"^(?:please\s+)?(?:can\s+you\s+)?(?:ask|query|consult)\s+(?P<target>[a-z0-9_-]+)\s+(?P<prompt>.+)$",
-            re.IGNORECASE,
-        ),
-        trigger="ask-target",
-        requires_target=True,
-    ),
-    IntentRule(
-        pattern=re.compile(
-            r"^(?:please\s+)?(?:can\s+you\s+)?delegate(?:\s+(?:this|that|it))?(?:\s+to)?\s+(?P<target>[a-z0-9_-]+)\s*[:,-]?\s*(?P<prompt>.+)$",
-            re.IGNORECASE,
-        ),
-        trigger="delegate-target",
-        requires_target=True,
-    ),
-    IntentRule(
-        pattern=re.compile(
-            r"^(?:please\s+)?(?:can\s+you\s+)?delegate(?:\s+(?:this|that|it))?\s*(?:on|about|for|:)?\s*(?P<prompt>.+)$",
-            re.IGNORECASE,
-        ),
-        trigger="delegate-generic",
-    ),
-    IntentRule(
-        pattern=re.compile(
-            r"^(?:please\s+)?(?:can\s+you\s+)?get\s+(?:a\s+)?second\s+opinion(?:\s+from\s+(?P<target>[a-z0-9_-]+))?\s*(?:on|about|for|:)?\s*(?P<prompt>.+)$",
-            re.IGNORECASE,
-        ),
-        trigger="second-opinion",
-    ),
-)
 
 
 class _DispatchSendBot(BaseXMPPBot):
@@ -108,18 +41,6 @@ class _DispatchSendBot(BaseXMPPBot):
         self.disconnect(wait=True)
 
 
-def _default_dispatcher_name() -> str:
-    return (os.getenv("SWITCH_DEFAULT_DISPATCHER") or "oc-gpt").strip() or "oc-gpt"
-
-
-def _default_delegate_dispatcher() -> str:
-    return (
-        os.getenv("SWITCH_DELEGATE_DEFAULT_DISPATCHER")
-        or os.getenv("SWITCH_DEFAULT_DISPATCHER")
-        or "oc-codex"
-    ).strip() or "oc-codex"
-
-
 T = TypeVar("T")
 
 
@@ -136,84 +57,6 @@ async def _poll_until(
         if result is not None:
             return result
         await asyncio.sleep(poll_interval)
-
-    return None
-
-
-def resolve_dispatcher_name(raw: str | None, known: set[str]) -> str | None:
-    token = (raw or "").strip().lower()
-    if not token:
-        return None
-
-    if token in known:
-        return token
-
-    mapped = _ALIAS_TO_DISPATCHER.get(token)
-    if mapped and mapped in known:
-        return mapped
-
-    return None
-
-
-def _normalize_intent_text(text: str) -> str:
-    normalized = re.sub(r"\s+", " ", text).strip()
-    return _LEADING_FILLERS_RE.sub("", normalized).strip()
-
-
-def _clean_prompt(raw_prompt: str) -> str:
-    return re.sub(r"^to\s+", "", raw_prompt.strip(), flags=re.IGNORECASE).strip()
-
-
-def _resolve_dispatcher_with_fallback(target_raw: str, known: set[str]) -> str | None:
-    dispatcher_name = resolve_dispatcher_name(target_raw, known)
-    if target_raw and not dispatcher_name:
-        # The user asked for a specific target, but it's not recognized.
-        return None
-    if dispatcher_name:
-        return dispatcher_name
-
-    fallback = _default_delegate_dispatcher()
-    dispatcher_name = resolve_dispatcher_name(fallback, known)
-    if dispatcher_name:
-        return dispatcher_name
-
-    return resolve_dispatcher_name(_default_dispatcher_name(), known)
-
-
-def parse_intent(body: str, *, dispatchers: dict[str, dict]) -> DelegationIntent | None:
-    text = (body or "").strip()
-    if not text:
-        return None
-
-    known = set(dispatchers.keys())
-    if not known:
-        return None
-
-    normalized = _normalize_intent_text(text)
-
-    for rule in _INTENT_RULES:
-        m = rule.pattern.match(normalized)
-        if not m:
-            continue
-
-        prompt = _clean_prompt(m.groupdict().get("prompt") or "")
-        if not prompt:
-            return None
-
-        target_raw = (m.groupdict().get("target") or "").strip()
-        if rule.requires_target and not target_raw:
-            continue
-        dispatcher_name = _resolve_dispatcher_with_fallback(target_raw, known)
-        if target_raw and not dispatcher_name:
-            continue
-        if not dispatcher_name:
-            return None
-
-        return DelegationIntent(
-            dispatcher_name=dispatcher_name,
-            prompt=prompt,
-            trigger=rule.trigger,
-        )
 
     return None
 

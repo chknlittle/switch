@@ -107,18 +107,7 @@ def _check_ralph_parser() -> None:
 
 
 def _check_delegation_helpers() -> None:
-    from src.delegation import build_envelope, parse_intent, resolve_dispatcher_name
-
-    known = {"oc-gpt", "cc", "heretic"}
-    if resolve_dispatcher_name("gpt", known) != "oc-gpt":
-        raise RuntimeError("resolve_dispatcher_name alias failed")
-    if resolve_dispatcher_name("unknown", known) is not None:
-        raise RuntimeError("resolve_dispatcher_name should reject unknown")
-
-    dispatchers = {name: {"jid": f"{name}@test"} for name in known}
-    intent = parse_intent("ask oc-gpt summarize the refactor", dispatchers=dispatchers)
-    if not intent or intent.dispatcher_name != "oc-gpt":
-        raise RuntimeError(f"parse_intent failed: {intent!r}")
+    from src.delegation import build_envelope
 
     envelope = build_envelope(token="tok", prompt="hi", parent_session="parent-1")
     if "tok" not in envelope or "parent-1" not in envelope:
@@ -212,7 +201,7 @@ CHECKS: list[tuple[str, Callable[[], None]]] = [
     ("db repositories construct", _check_db_repos),
     ("engines.normalize_engine + ENGINE_SPECS", _check_engines),
     ("ralph.parse_ralph_command", _check_ralph_parser),
-    ("delegation helpers (resolve, parse_intent, envelope)", _check_delegation_helpers),
+    ("delegation helpers (envelope)", _check_delegation_helpers),
     ("create_runner for each ENGINE_SPECS engine", _check_create_runners),
     ("lifecycle.sessions imports", _check_lifecycle_imports),
     ("bots (Directory, Dispatcher, Session)", _check_bots_imports),

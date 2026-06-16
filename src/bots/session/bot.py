@@ -26,7 +26,6 @@ from src.bots.session.xhtml import build_xhtml_message
 from src.bots.session.typing import TypingIndicator
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
-from src.db import DelegationTaskRepository
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.helpers import (
     append_to_history,
@@ -69,7 +68,6 @@ class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot)
         self.sessions = SessionRepository(db)
         self.messages = MessageRepository(db)
         self.ralph_loops = RalphLoopRepository(db)
-        self.delegations = DelegationTaskRepository(db)
         self.working_dir = working_dir
         self.output_dir = output_dir
         self.xmpp_recipient = xmpp_recipient
@@ -619,15 +617,6 @@ class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot)
             await self.run_shell_command(body[1:].strip())
             return
 
-        handled = await self._maybe_handle_local_intents(
-            body,
-            attachments=attachments,
-            is_scheduled=is_scheduled,
-            trigger_response=True,
-        )
-        if handled:
-            return
-
         # Check for pending question answers first
         if self.answer_pending_question(body):
             self.log.info(f"Answered pending question with: {body[:50]}...")
@@ -663,52 +652,6 @@ class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot)
         if queued_before and not is_scheduled:
             self.send_reply(f"Queued ({self._runtime.pending_count()} pending)")
         return
-
-    async def _maybe_handle_local_intents(
-        self,
-        body: str,
-        *,
-        attachments: list[Attachment] | None,
-        is_scheduled: bool,
-        trigger_response: bool,
-    ) -> bool:
-        if is_scheduled or not trigger_response or attachments:
-            return False
-
-        handled = await self._maybe_handle_conversational_delegation(body)
-        if handled:
-            await self._record_local_intent_user_message(body, attachments=attachments)
-            return True
-
-        return False
-
-    async def _record_local_intent_user_message(
-        self, body: str, *, attachments: list[Attachment] | None = None
-    ) -> None:
-        """Persist user input when local intents short-circuit runtime enqueue."""
-        try:
-            session = self.sessions.get(self.session_name)
-            if not session:
-                return
-            body_for_history = PromptAdapter().augment_prompt(
-                body, list(attachments or [])
-            )
-            append_to_history(
-                body_for_history, self.working_dir, session.claude_session_id
-            )
-            log_activity(body, session=self.session_name, source="xmpp")
-            await self.messages.add(
-                self.session_name,
-                "user",
-                body_for_history,
-                session.active_engine,
-            )
-            await self.sessions.update_last_active(self.session_name)
-        except Exception:
-            self.log.exception(
-                "Failed persisting local-intent user message for session=%s",
-                self.session_name,
-            )
 
     def _current_dispatcher_jid(self) -> str:
         session = self.sessions.get(self.session_name)
@@ -905,15 +848,6 @@ class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot)
     ) -> None:
         """Enqueue a message for serialized processing."""
         effective_attachments = list(attachments or [])
-        handled = await self._maybe_handle_local_intents(
-            body,
-            attachments=effective_attachments,
-            is_scheduled=False,
-            trigger_response=trigger_response,
-        )
-        if handled:
-            return
-
         await self._runtime.enqueue(
             body,
             effective_attachments,

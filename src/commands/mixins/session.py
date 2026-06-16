@@ -42,7 +42,9 @@ class SessionCommandsMixin(CommandMixinBase):
             self.bot.send_reply("No active dispatchers configured.")
             return True
 
-        lines.append("Example: ask oc-gemini What do you think about this plan?")
+        lines.append(
+            "Example: cd ~/switch && PYTHONPATH=. .venv/bin/python scripts/ask-agent.py -d oc-gemini 'your prompt'"
+        )
         self.bot.send_reply("\n".join(lines))
         return True
 

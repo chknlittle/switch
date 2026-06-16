@@ -10,8 +10,11 @@
 # Safe sessions: the current session's tmux name (if $TMUX_PANE is set) and any
 # names passed via --keep.  The "switch" server session is always kept.
 #
+# Use --switch-only for cron jobs: only DB-tracked Switch sessions are eligible,
+# and unrelated/orphan tmux sessions (dashboards, experiments, tunnels) are left alone.
+#
 # Usage:
-#   reap-sessions.sh [--keep name1,name2] [--dry-run]
+#   reap-sessions.sh [--keep name1,name2] [--switch-only] [--dry-run]
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -19,12 +22,14 @@ cd "$(dirname "$0")/.."
 DB="sessions.db"
 DRY_RUN=0
 KEEP_CSV=""
+SWITCH_ONLY=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry-run)  DRY_RUN=1; shift ;;
-        --keep)     KEEP_CSV="$2"; shift 2 ;;
-        *)          echo "Unknown arg: $1"; exit 1 ;;
+        --dry-run)     DRY_RUN=1; shift ;;
+        --switch-only) SWITCH_ONLY=1; shift ;;
+        --keep)        KEEP_CSV="$2"; shift 2 ;;
+        *)             echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
@@ -121,6 +126,7 @@ fi
 # --- Pass 1: Dead panes ---
 for name in "${!TMUX_SESSIONS[@]}"; do
     is_kept "$name" && continue
+    (( SWITCH_ONLY )) && [[ ! -v DB_ACTIVE["$name"] ]] && continue
     # Check if pane command is still alive
     pid=$(tmux list-panes -t "$name" -F '#{pane_pid}' 2>/dev/null | head -1)
     if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
@@ -133,7 +139,7 @@ done
 # --- Pass 2: Orphaned tmux (no DB entry) ---
 # Only run this pass if DB query succeeded AND we have entries
 # This prevents killing non-Switch tmux sessions when DB is unreachable
-if (( DB_QUERY_OK )) && (( DB_ACTIVE_COUNT > 0 )); then
+if (( ! SWITCH_ONLY )) && (( DB_QUERY_OK )) && (( DB_ACTIVE_COUNT > 0 )); then
     for name in "${!TMUX_SESSIONS[@]}"; do
         is_kept "$name" && continue
         if [[ ! -v DB_ACTIVE["$name"] ]]; then
