@@ -20,6 +20,7 @@ class CursorModelVariant:
 _MODEL_VARIANT_LEVELS: dict[str, frozenset[str]] = {
     "cursor-grok-4.5": frozenset({"low", "medium", "high"}),
     "cursor-grok-4.6": frozenset({"low", "medium", "high", "xhigh"}),
+    "grok-4.7": frozenset({"low", "medium", "high", "xhigh"}),
 }
 
 

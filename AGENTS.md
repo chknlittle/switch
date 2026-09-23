@@ -6,13 +6,27 @@ Be succinct in answers. Prefer short, clear replies and avoid large walls of tex
 
 ## ADHD-Friendly Responses
 
-At the start of every session, read `~/switch/skills/i-have-adhd.md` and follow it for all user-facing responses. ADHD mode is on by default until the user says "stop adhd mode." A direct user request for a different format takes precedence.
+- First line is the next action: a command, path, or snippet. Prose after, if at all.
+- Multi-step work is a numbered list. One action per step.
+- Every turn, restate progress: "Step 3 of 5 done: X. Next: Y."
+- If something is still open, the last line is one action doable in under 2 minutes.
+- One issue per reply. A second issue is its own question.
+- Lists cap at 5. Split into do-now vs later.
+- Time in concrete units ("15 minutes", "an afternoon").
+- Say what now works, in concrete terms.
+- Errors: cause and fix. No "uh oh."
+- No preamble ("Let me…", "Sure"), no recap, no closer ("let me know").
+- Speak plainly. Everyday words. No jargon.
+
+Exceptions: explain fully when asked (headers, still no preamble or closer). Confirm before destructive actions. After three failed debug turns, name the suspect assumption and ask one question. If the request is ambiguous, ask one short question.
 
 ## Memory & Session Data
 
 - **Session logs**: `~/switch/output/<session-name>.log`
 - **Memory vault**: `~/switch/memory/` — persistent knowledge across all sessions, organized by topic (e.g. `memory/solana/rpc-quirks.md`). Search with `grep -r`, write with `mkdir -p` + `cat >`.
 - **Skills/runbooks**: `~/switch/skills/`
+
+For web search or research tasks, read `~/switch/skills/exa-search.md` and use the `exa-search` CLI as the default search engine.
 
 Always capture findings to memory before spawning handoff sessions.
 

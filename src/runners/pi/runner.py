@@ -10,7 +10,6 @@ from typing import AsyncIterator
 
 from src.runners.base import BaseRunner, RunState
 from src.runners.pi.config import PiConfig
-from src.runners.pi.loop_detection import LoopGuardHit, loop_detector_for_model
 from src.runners.pi.processor import PiEventProcessor
 from src.runners.ports import RunnerEvent
 from src.runners.timeouts import runner_idle_stall_timeout_s
@@ -36,24 +35,13 @@ class PiRunner(BaseRunner):
     ):
         super().__init__(working_dir, output_dir, session_name)
         self._config = config or PiConfig()
-        model = self._config.resolve_model()
-        loop_detector = loop_detector_for_model(model)
-        self._loop_detector = loop_detector
-        if loop_detector:
-            log.info(
-                "Pi loop guard enabled for model %s (threshold=%s)",
-                model,
-                loop_detector.threshold,
-            )
         self._processor = PiEventProcessor(
             log_to_file=self._log_to_file,
             log_response=self._log_response,
-            loop_detector=loop_detector,
         )
         self._process: asyncio.subprocess.Process | None = None
         self._cancelled = False
         self._stderr_task: asyncio.Task | None = None
-        self._loop_recovery: dict | None = None
 
     def _build_command(self, session_id: str | None) -> list[str]:
         pi_bin = self._config.resolve_bin()
@@ -254,101 +242,6 @@ class PiRunner(BaseRunner):
                 return resp
         return None
 
-    async def _abort_agent_turn(self) -> None:
-        """Stop the current Pi agent turn without marking a user cancellation."""
-        if self._process and self._process.stdin and not self._process.stdin.is_closing():
-            try:
-                await self._send({"type": "abort"})
-            except RuntimeError:
-                pass
-
-    async def _drain_until_agent_end(self, timeout_s: float = 10.0) -> bool:
-        """Consume events from an aborted turn until its agent_end arrives.
-
-        The abort command stops the turn asynchronously. Without draining, the
-        aborted turn's trailing events (including its agent_end) would leak into
-        the next turn's event read and terminate it prematurely.
-        """
-        if not self._process or not self._process.stdout:
-            return False
-        deadline = asyncio.get_event_loop().time() + timeout_s
-        while asyncio.get_event_loop().time() < deadline:
-            if self._cancelled or not self._is_alive():
-                return False
-            try:
-                raw = await asyncio.wait_for(
-                    self._process.stdout.readline(), timeout=1.0
-                )
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                return False
-            if not raw:
-                return False
-            line = raw.decode(errors="replace").strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            if event.get("type") == "extension_ui_request":
-                await self._handle_extension_ui(event)
-                continue
-            if event.get("type") == "agent_end":
-                return True
-        return False
-
-    async def _run_loop_recovery(self, state: RunState) -> AsyncIterator[Event]:
-        """After loop guard fires, ask the model to summarize instead of erroring out."""
-        if not self._loop_detector or not self._loop_recovery or self._cancelled:
-            return
-
-        recovery = self._loop_recovery
-        self._loop_recovery = None
-        hit = self._loop_detector.last_hit
-        if hit is None:
-            hit = LoopGuardHit(
-                tool_name=str(recovery.get("tool_name") or "tool"),
-                period=int(recovery.get("period") or 1),
-                repetitions=int(recovery.get("repetitions") or 0),
-            )
-
-        notice = self._loop_detector.loop_notice(hit)
-        self._log_to_file(f"{notice.strip()}\n")
-        yield ("text", notice)
-
-        prompt = self._loop_detector.recovery_prompt(hit)
-        self._log_to_file("[loop-guard recovery prompt]\n")
-        log.warning(
-            "Pi loop guard recovery for %s (period=%s)",
-            self.session_name,
-            hit.period,
-        )
-
-        # Wait out the aborted turn before prompting, so its trailing agent_end
-        # cannot end the recovery turn's event read early.
-        if not await self._drain_until_agent_end():
-            log.warning(
-                "Pi loop guard: no agent_end after abort for %s; "
-                "recovery summary may be cut short",
-                self.session_name,
-            )
-        if self._cancelled or not self._is_alive():
-            return
-
-        self._processor.reset_loop_detector()
-        self._processor.set_loop_detection_enabled(False)
-        try:
-            await self._send({"type": "prompt", "message": prompt})
-            async for event in self._read_events(state):
-                yield event
-        finally:
-            self._processor.set_loop_detection_enabled(True)
-            self._processor.reset_loop_detector()
-
     async def _read_events(
         self, state: RunState,
     ) -> AsyncIterator[Event]:
@@ -402,7 +295,7 @@ class PiRunner(BaseRunner):
 
             if event_type in {"auto_retry_start", "compaction_start"}:
                 # Discard the failed/limited attempt's partial prose before Pi
-                # streams the replacement response. Reset the shared loop too.
+                # streams the replacement response.
                 state.text = ""
                 state.saw_error = False
                 state.terminal_error = None
@@ -410,25 +303,11 @@ class PiRunner(BaseRunner):
                 yield ("text_reset", None)
                 continue
 
-            loop_guard_hit = False
             for parsed in self._processor.parse_event(event, state):
                 if parsed[0] == "_extension_ui_request":
                     await self._handle_extension_ui(parsed[1])
                     continue
-                if parsed[0] == "_loop_guard":
-                    self._loop_recovery = parsed[1]
-                    log.warning(
-                        "Pi loop guard triggered for %s (period=%s)",
-                        self.session_name,
-                        parsed[1].get("period"),
-                    )
-                    await self._abort_agent_turn()
-                    loop_guard_hit = True
-                    break
                 yield parsed
-
-            if loop_guard_hit:
-                break
 
             # Pi can retry or compact after agent_end. agent_settled is the
             # actual end of all post-run recovery and continuation work.
@@ -488,13 +367,8 @@ class PiRunner(BaseRunner):
             await self._send({"type": "prompt", "message": prompt})
 
             # Stream events — no hard deadline; timeouts warn instead of killing.
-            self._loop_recovery = None
             async for event in self._read_events(state):
                 yield event
-
-            if self._loop_recovery and not self._cancelled:
-                async for event in self._run_loop_recovery(state):
-                    yield event
 
             was_cancelled = self._cancelled
 

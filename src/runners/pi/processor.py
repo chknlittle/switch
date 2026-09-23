@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Callable
 
 from src.runners.base import RunState
-from src.runners.pi.loop_detection import LoopGuardHit, PiToolLoopDetector
 from src.runners.ports import RunnerEvent, ToolResult
 
 Event = RunnerEvent
@@ -66,19 +65,9 @@ class PiEventProcessor:
         *,
         log_to_file: Callable[[str], None],
         log_response: Callable[[str], None],
-        loop_detector: PiToolLoopDetector | None = None,
     ):
         self._log_to_file = log_to_file
         self._log_response = log_response
-        self._loop_detector = loop_detector
-        self._loop_detection_enabled = loop_detector is not None
-
-    def set_loop_detection_enabled(self, enabled: bool) -> None:
-        self._loop_detection_enabled = enabled
-
-    def reset_loop_detector(self) -> None:
-        if self._loop_detector:
-            self._loop_detector.reset()
 
     def _handle_message_update(self, event: dict, state: RunState) -> Event | None:
         ame = event.get("assistantMessageEvent")
@@ -142,24 +131,6 @@ class PiEventProcessor:
         if event_type == "tool_execution_start":
             name = event.get("toolName", "?")
             args = event.get("args") or event.get("arguments")
-
-            hit = (
-                self._loop_detector.observe(name, args)
-                if self._loop_detection_enabled and self._loop_detector
-                else None
-            )
-            if hit:
-                self._log_to_file(
-                    f"[loop-guard] period={hit.period} reps={hit.repetitions} {name}\n"
-                )
-                return (
-                    "_loop_guard",
-                    {
-                        "tool_name": name,
-                        "period": hit.period,
-                        "repetitions": hit.repetitions,
-                    },
-                )
 
             # Build a useful description.
             extra = ""

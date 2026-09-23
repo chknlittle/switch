@@ -104,14 +104,10 @@ class OpenCodeClient:
 
         body: dict[str, object] = {"parts": parts}
         if model_payload:
-            effective_model_payload = dict(model_payload)
-            if (
-                effective_model_payload.get("providerID") == "heretic_local"
-                and effective_model_payload.get("modelID") == "heretic-v3"
-                and reasoning_mode == "high"
-            ):
-                effective_model_payload["modelID"] = "heretic-v3-thinking"
-            body["model"] = effective_model_payload
+            model = dict(model_payload)
+            if reasoning_mode == "high":
+                model["variant"] = "high"
+            body["model"] = model
         # OpenCode server v1.1.65 can silently no-op when `agent` is provided
         # (HTTP 200, empty body, no stored messages). Keep agent opt-in.
         if agent and os.getenv("SWITCH_OPENCODE_SEND_AGENT", "0") in {
@@ -120,12 +116,6 @@ class OpenCodeClient:
             "True",
         }:
             body["agent"] = agent
-        if (
-            reasoning_mode == "high"
-            and model_payload
-            and model_payload.get("providerID") != "heretic_local"
-        ):
-            body["model"] = {**model_payload, "variant": "high"}
         url = self._make_url(f"/session/{session_id}/message")
         return await self.request_json(session, "POST", url, json=body)
 
