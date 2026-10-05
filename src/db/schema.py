@@ -100,33 +100,6 @@ def init_db() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_session_messages_session_name_id ON session_messages(session_name, id DESC)"
     )
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS delegation_tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            token TEXT UNIQUE NOT NULL,
-            parent_session TEXT NOT NULL,
-            dispatcher_name TEXT NOT NULL,
-            dispatcher_jid TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'queued',
-            delegated_session TEXT,
-            delegated_user_message_id INTEGER,
-            delegated_reply_message_id INTEGER,
-            error TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY (parent_session) REFERENCES sessions(name) ON DELETE CASCADE,
-            FOREIGN KEY (delegated_session) REFERENCES sessions(name) ON DELETE SET NULL
-        )
-    """)
-
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_delegation_tasks_parent_created ON delegation_tasks(parent_session, created_at DESC)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_delegation_tasks_status_updated ON delegation_tasks(status, updated_at DESC)"
-    )
-
     # Migrations for existing databases
     migrations = [
         ("opencode_session_id", "TEXT"),

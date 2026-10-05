@@ -23,7 +23,7 @@ from slixmpp.plugins.xep_0030.stanza.items import DiscoItems
 from slixmpp.xmlstream import ET
 
 from src.db import RalphLoopRepository, SessionRepository
-from src.utils import BaseXMPPBot
+from src.bots.base import BaseXMPPBot
 
 
 class DirectoryBot(BaseXMPPBot):

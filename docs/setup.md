@@ -178,10 +178,18 @@ ln -s ~/AGENTS.md ~/CLAUDE.md
 
 ## Skills
 
-Skills are reusable runbooks/procedures that live in `~/switch/skills/`. Both Claude Code and OpenCode can use skills, but they expect different formats:
+Skills are reusable runbooks/procedures that live in `~/switch/skills/`, one folder per skill with a `SKILL.md` inside (e.g., `spawn-session/SKILL.md`).
 
-- **Claude Code**: Flat `.md` files with YAML frontmatter (e.g., `spawn-session.md`)
-- **OpenCode**: Folder per skill with `SKILL.md` inside (e.g., `spawn-session/SKILL.md`)
+### Claude Code
+
+Claude Code picks up skills from `.claude/skills/` in the working directory or any parent. Sessions run in `~/sessions/<name>/`, so one symlink covers all of them:
+
+```bash
+mkdir -p ~/sessions/.claude
+ln -s ~/switch/skills ~/sessions/.claude/skills
+```
+
+New skills show up in new sessions automatically; nothing to sync.
 
 ### Syncing Skills to OpenCode
 
@@ -191,7 +199,7 @@ The `sync-to-opencode.py` script converts Claude Code skills to OpenCode format:
 python ~/switch/scripts/sync-to-opencode.py
 ```
 
-This reads all `.md` files from `~/switch/skills/` and creates the corresponding folder structure in `~/.config/opencode/skill/`. No symlinks needed - the script copies and reformats everything.
+This reads every `<name>/SKILL.md` in `~/switch/skills/` and creates the corresponding folder structure in `~/.config/opencode/skill/`. No symlinks needed - the script copies and reformats everything.
 
 Options:
 

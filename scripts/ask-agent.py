@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.db import DB_PATH
 from src.delegation import delegate_once
-from src.utils import get_xmpp_config, load_env
+from src.settings.env import get_xmpp_config, load_env
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

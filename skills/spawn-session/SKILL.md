@@ -42,8 +42,8 @@ After filling this out, ask:
     Save discoveries to memory? (for future sessions)
 
 If yes, use the memory skills to persist discoveries before spawning:
-- See `~/switch/skills/write-memory.md` for how to write
-- See `~/switch/skills/read-memory.md` for how to read
+- See `~/switch/skills/write-memory/SKILL.md` for how to write
+- See `~/switch/skills/read-memory/SKILL.md` for how to read
 
 ## Script Location
 

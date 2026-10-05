@@ -6,7 +6,6 @@ Separates parsing/logging concerns from the subprocess orchestration in
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -17,20 +16,6 @@ from src.runners.tool_logging import (
     should_log_tool_input,
     tool_input_max_len,
 )
-
-
-@dataclass
-class ClaudeResult:
-    """Final result from a Claude run."""
-
-    text: str
-    session_id: str | None
-    cost: float
-    turns: int
-    tool_count: int
-    total_tokens: int
-    context_window: int
-    duration_s: float
 
 
 Event = RunnerEvent

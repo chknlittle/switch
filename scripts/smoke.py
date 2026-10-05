@@ -53,7 +53,6 @@ def _check_init_db() -> None:
 
 def _check_db_repos() -> None:
     from src.db import (
-        DelegationTaskRepository,
         MessageRepository,
         RalphLoopRepository,
         SessionRepository,
@@ -68,7 +67,6 @@ def _check_db_repos() -> None:
         SessionRepository(conn)
         MessageRepository(conn)
         RalphLoopRepository(conn)
-        DelegationTaskRepository(conn)
         conn.close()
     finally:
         schema.DB_PATH = old_path
@@ -155,7 +153,7 @@ async def _check_bridge_wiring() -> None:
     import src.db.schema as schema
     from src.bridge import _SingleInstanceLock
     from src.manager import SessionManager
-    from src.utils import get_xmpp_config
+    from src.settings.env import get_xmpp_config
 
     lock_dir = Path(tempfile.mkdtemp(prefix="switch-smoke-bridge-"))
     lock_path = lock_dir / "bridge.lock"

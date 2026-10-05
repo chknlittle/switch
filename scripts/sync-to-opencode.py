@@ -61,7 +61,7 @@ def sync_skills(source_dir: Path, target_dir: Path, dry_run: bool = False) -> No
     """Sync skills from Claude Code format to OpenCode format.
 
     Args:
-        source_dir: Directory containing Claude Code .md skill files.
+        source_dir: Directory containing <name>/SKILL.md skill folders.
         target_dir: Directory to create OpenCode skill folders in.
         dry_run: If True, print what would be done without making changes.
     """
@@ -72,11 +72,8 @@ def sync_skills(source_dir: Path, target_dir: Path, dry_run: bool = False) -> No
         print(f"Error: Source directory does not exist: {source_dir}")
         return
 
-    # Find all .md files (excluding this script and special files)
-    skill_files = [
-        f for f in source_dir.glob('*.md')
-        if f.name not in ('.gitkeep', 'README.md')
-    ]
+    # Each skill is a <name>/SKILL.md folder
+    skill_files = sorted(source_dir.glob('*/SKILL.md'))
 
     if not skill_files:
         print(f"No skill files found in {source_dir}")
@@ -94,7 +91,7 @@ def sync_skills(source_dir: Path, target_dir: Path, dry_run: bool = False) -> No
         content = skill_file.read_text()
         frontmatter, body = parse_frontmatter(content)
 
-        name = frontmatter.get('name', skill_file.stem)
+        name = frontmatter.get('name', skill_file.parent.name)
         description = frontmatter.get('description', '')
 
         # Validate name

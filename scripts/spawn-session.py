@@ -31,7 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.delegation import find_spawned_session_for_token, get_latest_message_id, send_dispatcher_message
-from src.utils import get_xmpp_config, load_env
+from src.settings.env import get_xmpp_config, load_env
 
 # Load environment
 load_env()

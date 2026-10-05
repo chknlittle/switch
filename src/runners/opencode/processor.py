@@ -15,7 +15,6 @@ from src.runners.base import RunState
 from src.runners.opencode import event_handlers
 from src.runners.opencode.events import coerce_event
 from src.runners.opencode.models import Event
-from src.runners.opencode.text_sanitize import sanitize_assistant_text
 
 
 class OpenCodeEventProcessor:
@@ -29,10 +28,6 @@ class OpenCodeEventProcessor:
         self._log_to_file = log_to_file
         self._log_response = log_response
         self._model = model
-
-    @staticmethod
-    def _sanitize_assistant_text(text: str) -> str:
-        return sanitize_assistant_text(text)
 
     def make_result(self, state: RunState) -> dict:
         if self._log_response and state.text:

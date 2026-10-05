@@ -1,4 +1,6 @@
-.env
+.env*
+!.env.example
+*.bak
 dispatchers.json
 dispatchers.local.json
 .claude/

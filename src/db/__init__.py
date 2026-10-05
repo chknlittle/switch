@@ -5,12 +5,10 @@ Provides:
 - SessionRepository: CRUD for sessions table
 - RalphLoopRepository: CRUD for ralph_loops table
 - MessageRepository: CRUD for session_messages table
-- DelegationTaskRepository: CRUD for delegation_tasks table
 """
 
 from __future__ import annotations
 
-from src.db.repos.delegation import DelegationTask, DelegationTaskRepository
 from src.db.repos.messages import MessageRepository, SessionMessage
 from src.db.repos.ralph import RalphLoop, RalphLoopRepository
 from src.db.repos.sessions import Session, SessionRepository
@@ -23,8 +21,6 @@ from src.db.signals import (
 
 __all__ = [
     "DB_PATH",
-    "DelegationTask",
-    "DelegationTaskRepository",
     "MessageRepository",
     "RalphLoop",
     "RalphLoopRepository",

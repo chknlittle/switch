@@ -12,7 +12,9 @@ import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, TypeVar
 
-from src.utils import BaseXMPPBot, get_xmpp_config, run_ejabberdctl
+from src.bots.base import BaseXMPPBot
+from src.settings.env import get_xmpp_config
+from src.utils import run_ejabberdctl
 
 
 @dataclass(frozen=True)

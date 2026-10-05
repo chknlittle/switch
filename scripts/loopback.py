@@ -21,7 +21,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.utils import get_xmpp_config, load_env, run_ejabberdctl
+from src.settings.env import get_xmpp_config, load_env
+from src.utils import run_ejabberdctl
 
 
 class LoopbackBot(ClientXMPP):

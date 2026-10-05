@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from src.runners import Runner, RunnerEvent
+from src.runners import Runner
 from src.runners.claude.config import ClaudeConfig
 from src.runners.cursor.config import CursorConfig
 from src.runners.opencode.config import OpenCodeConfig
@@ -69,10 +69,6 @@ class HistoryPort(Protocol):
     ) -> None: ...
 
     def log_activity(self, message: str, *, session: str, source: str) -> None: ...
-
-
-class RunnerEventSinkPort(Protocol):
-    async def on_event(self, event: RunnerEvent) -> None: ...
 
 
 class AttachmentPromptPort(Protocol):

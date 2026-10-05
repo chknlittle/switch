@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import os
-import struct
 import time
 from typing import Callable
 

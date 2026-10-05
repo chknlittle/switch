@@ -17,7 +17,7 @@ from src.heartbeat import parse_heartbeat_command
 from src.ralph import parse_ralph_command
 from src.runners import create_runner
 from src.runners.pi.config import PiConfig
-from src.utils import BaseXMPPBot
+from src.bots.base import BaseXMPPBot
 
 if TYPE_CHECKING:
     import sqlite3

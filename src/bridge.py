@@ -28,7 +28,7 @@ from src.db import init_db
 from src.helpers import create_xmpp_account
 from src.manager import SessionManager
 from src.telemetry import init_telemetry
-from src.utils import get_xmpp_config, load_env
+from src.settings.env import get_xmpp_config, load_env
 
 # Load environment
 load_env()

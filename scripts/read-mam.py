@@ -28,8 +28,9 @@ if _VENV_PYTHON.exists() and Path(sys.prefix).resolve() != _VENV_ROOT.resolve():
 
 from slixmpp.exceptions import IqError, IqTimeout
 
+from src.bots.base import BaseXMPPBot
 from src.db import DB_PATH, SessionRepository
-from src.utils import BaseXMPPBot, get_xmpp_config, load_env
+from src.settings.env import get_xmpp_config, load_env
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

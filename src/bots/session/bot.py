@@ -33,8 +33,8 @@ from src.helpers import (
 )
 from src.runners import Runner
 from src.attachments import Attachment, AttachmentStore
-from src.utils import SWITCH_META_NS, BaseXMPPBot, build_message_meta
-from slixmpp.xmlstream import ET
+from src.bots.base import BaseXMPPBot
+from src.utils import SWITCH_META_NS, build_message_meta
 
 if TYPE_CHECKING:
     import sqlite3
@@ -331,57 +331,6 @@ class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot)
         if self.room_jid and target == self.room_jid:
             return
         super().send_typing(recipient=target)
-
-    def send_image(
-        self,
-        image_data: bytes,
-        mime_type: str = "image/png",
-        caption: str | None = None,
-        recipient: str | None = None,
-    ):
-        """Send an image using XEP-0231 (Bits of Binary)."""
-        if self.shutting_down:
-            return
-
-        import base64
-        import uuid
-
-        def _safe_send(m) -> bool:
-            try:
-                m.send()
-                return True
-            except Exception:
-                self.log.warning("XMPP send failed", exc_info=True)
-                return False
-
-        target = recipient or self._default_reply_recipient()
-        is_room_target = bool(self.room_jid and target == self.room_jid)
-
-        # Create message
-        msg = self.make_message(
-            mto=target,
-            mbody=caption or "Image attached",
-            mtype="groupchat" if is_room_target else "chat",
-        )
-        if not is_room_target:
-            msg["chat_state"] = "active"
-
-        # Add BOB (Bits of Binary) image payload
-        cid = f"sha1+base64@{uuid.uuid4().hex}"
-        bob_data = ET.Element(f"{{urn:xmpp:bob}}data")
-        bob_data.set("cid", cid)
-        bob_data.set("type", mime_type)
-        bob_data.text = base64.b64encode(image_data).decode("utf-8")
-
-        # Add x:html for caption rendering
-        rich = build_xhtml_message(caption or "Image attached")
-        if rich is not None:
-            msg.xml.append(rich)
-
-        # Append BOB data to message
-        msg.xml.append(bob_data)
-
-        _safe_send(msg)
 
     @staticmethod
     def _infer_meta_tool_from_summary(summary: str) -> str | None:
