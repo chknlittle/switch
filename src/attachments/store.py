@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import os
 import re
+import shutil
 import socket
 import time
 import uuid
@@ -16,7 +17,7 @@ from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 
-from .config import AttachmentsConfig, get_attachments_config
+from .config import AttachmentsConfig, _default_base_dir, get_attachments_config
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +53,11 @@ def _safe_slug(text: str) -> str:
     text = re.sub(r"[^a-z0-9._-]+", "-", text)
     text = re.sub(r"-+", "-", text).strip("-")
     return text or "file"
+
+
+def delete_session_attachments(session_name: str) -> None:
+    """Remove every attachment stored for a session."""
+    shutil.rmtree(_default_base_dir() / _safe_slug(session_name), ignore_errors=True)
 
 
 def _guess_ext(mime: str, url: str | None = None) -> str:

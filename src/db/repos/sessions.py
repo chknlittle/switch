@@ -295,10 +295,12 @@ class SessionRepository:
             return
         await self._update_session_column(name, column, None)
 
-    async def close(self, name: str) -> None:
-        await self._update_session_column(name, "status", "closed")
-
     async def delete(self, name: str) -> None:
+        """Delete a session and its rows in other tables.
+
+        Messages and ralph loops are deleted explicitly because older databases
+        created those tables without ON DELETE CASCADE.
+        """
         async with self._write_lock:
             self.conn.execute(
                 "DELETE FROM session_messages WHERE session_name = ?", (name,)

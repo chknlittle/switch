@@ -396,7 +396,7 @@ class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot)
 
         - Cancels in-flight work
         - Prevents reconnect
-        - Deletes XMPP account, kills tmux tail, marks session closed
+        - Deletes XMPP account, kills tmux tail, purges session data
         """
         if self.shutting_down:
             return

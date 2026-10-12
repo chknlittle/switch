@@ -32,9 +32,6 @@ elif mode == "jid":
     row = conn.execute("SELECT xmpp_jid FROM sessions WHERE name = ?", (sys.argv[3],)).fetchone()
     if row and row[0]:
         print(row[0])
-elif mode == "close":
-    conn.execute("UPDATE sessions SET status='closed' WHERE name = ?", (sys.argv[3],))
-    conn.commit()
 
 conn.close()
 PY
@@ -90,17 +87,25 @@ case "${1:-list}" in
         tmux kill-session -t "$NAME" 2>/dev/null
 
         USERNAME=$(echo "$JID" | cut -d@ -f1)
-        source .env 2>/dev/null
+        set -a; source .env 2>/dev/null; set +a
         $EJABBERD_CTL unregister "$USERNAME" "$XMPP_DOMAIN" 2>/dev/null
 
-        # Archive semantics: don't delete session history.
-        if has_sqlite; then
-            sqlite3 "$DB" "UPDATE sessions SET status='closed' WHERE name='$NAME'"
-        else
-            python_sqlite "$DB" close "$NAME"
-        fi
+        # Purge DB rows, log, attachments and empty work dir.
+        PYTHONPATH=. .venv/bin/python - "$NAME" <<'PY' || { echo "Purge failed: $NAME"; exit 1; }
+import asyncio
+import os
+import sys
+from pathlib import Path
 
-        echo "Closed session: $NAME"
+from src.lifecycle.sessions import purge_session
+
+asyncio.run(purge_session(
+    sys.argv[1],
+    working_dir=os.getenv("SWITCH_WORKING_DIR", str(Path.home())),
+    output_dir=Path("output").resolve(),
+))
+PY
+        echo "Purged session: $NAME"
         ;;
 
     clean)

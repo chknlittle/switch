@@ -9,10 +9,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import suppress
 from pathlib import Path
 import shutil
 from typing import TYPE_CHECKING, Protocol, Callable
 
+from src.attachments.store import delete_session_attachments
+from src.db import SessionRepository, init_db
+from src.heartbeat import clear_heartbeat_session, read_heartbeat_session
 from src.helpers import (
     add_roster_subscription,
     create_tmux_session,
@@ -26,7 +30,6 @@ if TYPE_CHECKING:
     import sqlite3
 
     from src.bots.session import SessionBot
-    from src.db import SessionRepository
 
 _log = logging.getLogger("lifecycle.sessions")
 
@@ -34,6 +37,8 @@ _log = logging.getLogger("lifecycle.sessions")
 class _SessionKillManager(Protocol):
     sessions: "SessionRepository"
     session_bots: dict[str, "SessionBot"]
+    working_dir: str
+    output_dir: Path
     xmpp_server: str
     xmpp_domain: str
     xmpp_recipient: str
@@ -329,6 +334,19 @@ async def _rollback_failed_create(
         )
 
 
+def _purge_session_files(name: str, *, working_dir: str, output_dir: Path) -> None:
+    """Remove a session's log, attachments, empty work dir and heartbeat pointer.
+
+    The work dir is only removed when empty: it may hold files the agent wrote.
+    """
+    (output_dir / f"{name}.log").unlink(missing_ok=True)
+    delete_session_attachments(name)
+    with suppress(OSError):
+        (Path(working_dir) / "sessions" / name).rmdir()
+    if read_heartbeat_session() == name:
+        clear_heartbeat_session()
+
+
 async def kill_session(
     manager: _SessionKillManager,
     name: str,
@@ -336,19 +354,19 @@ async def kill_session(
     goodbye: str = "Session closed. Goodbye!",
     send_goodbye: bool = True,
 ) -> bool:
-    """Archive-with-goodbye session kill.
+    """Kill a session and purge it.
 
     Semantics:
     - Send a final goodbye message (best-effort)
     - Stop the in-memory bot and prevent reconnect
     - Unregister the XMPP account
     - Kill tmux
-    - Mark session closed in DB
+    - Delete the session's DB rows, log, attachments and (empty) work dir
     """
 
     session = manager.sessions.get(name)
-    if not session or session.status == "closed":
-        return session is not None
+    if not session:
+        return True
 
     if send_goodbye:
         bot = manager.session_bots.get(name)
@@ -383,8 +401,32 @@ async def kill_session(
         kill_tmux_session(name)
     except Exception:
         _log.warning("Failed to kill tmux session for %s", name, exc_info=True)
-    await manager.sessions.close(name)
+
+    try:
+        await asyncio.to_thread(
+            _purge_session_files,
+            name,
+            working_dir=manager.working_dir,
+            output_dir=manager.output_dir,
+        )
+    except Exception:
+        _log.warning("Failed to purge files for %s", name, exc_info=True)
+    await manager.sessions.delete(name)
     manager.session_bots.pop(name, None)
 
     manager.notify_directory_sessions_changed()
     return True
+
+
+async def purge_session(name: str, *, working_dir: str, output_dir: Path) -> None:
+    """Purge a session's DB rows and files while the bridge is down (CLI cleanup).
+
+    XMPP account and tmux teardown are left to the caller.
+    """
+    conn = init_db()
+    try:
+        sessions = SessionRepository(conn)
+        _purge_session_files(name, working_dir=working_dir, output_dir=output_dir)
+        await sessions.delete(name)
+    finally:
+        conn.close()
