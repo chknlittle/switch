@@ -23,6 +23,7 @@ from slixmpp.plugins.xep_0030.stanza.items import DiscoItems
 from slixmpp.xmlstream import ET
 
 from src.db import RalphLoopRepository, SessionRepository
+from src.projects import list_projects
 from src.bots.base import BaseXMPPBot
 
 
@@ -30,6 +31,7 @@ class DirectoryBot(BaseXMPPBot):
     """Directory service that serves hierarchy via disco + pubsub."""
 
     DISPATCHERS_NODE = "dispatchers"
+    PROJECTS_NODE = "projects"
     ACTIVE_SESSIONS_LIMIT = 200
     ACTIVE_SESSIONS_CACHE_TTL_S = 3.0
 
@@ -115,6 +117,9 @@ class DirectoryBot(BaseXMPPBot):
         if requested == self.DISPATCHERS_NODE:
             return self._items_dispatchers()
 
+        if requested == self.PROJECTS_NODE:
+            return self._items_projects()
+
         # Direct dispatcher→sessions lookup (no groups indirection).
         if requested.startswith("sessions:"):
             dispatcher_jid = requested[len("sessions:") :]
@@ -150,6 +155,20 @@ class DirectoryBot(BaseXMPPBot):
                 node = str(idx)
             items.add_item(JID(djid), node=node, name=label)
         return items
+
+    def _items_projects(self) -> DiscoItems:
+        items = DiscoItems()
+        for name in list_projects():
+            items.add_item(JID(self.boundjid.bare), node=f"project={name}", name=name)
+        return items
+
+    @staticmethod
+    def _session_node(*tags: str | None, project: str | None = None) -> str | None:
+        """Colon-delimited node tags, e.g. "ralph:project=lemebase"."""
+        parts = [t for t in tags if t]
+        if project:
+            parts.append(f"project={project}")
+        return ":".join(parts) or None
 
     def _is_direct_dispatcher(self, key: str | None) -> bool:
         if not key:
@@ -194,7 +213,9 @@ class DirectoryBot(BaseXMPPBot):
         active_jids: set[str] = set()
         for s in sessions:
             try:
-                node = "ralph" if s.name in ralph_names else None
+                node = self._session_node(
+                    "ralph" if s.name in ralph_names else None, project=s.project
+                )
                 items.add_item(JID(s.xmpp_jid), node=node, name=s.name)
                 active_jids.add(str(JID(s.xmpp_jid).bare))
             except Exception:
@@ -211,7 +232,8 @@ class DirectoryBot(BaseXMPPBot):
                 bare = str(JID(s.xmpp_jid).bare)
                 if bare in active_jids:
                     continue
-                items.add_item(JID(s.xmpp_jid), node="closed", name=s.name)
+                node = self._session_node("closed", project=s.project)
+                items.add_item(JID(s.xmpp_jid), node=node, name=s.name)
             except Exception:
                 continue
 
@@ -285,7 +307,9 @@ class DirectoryBot(BaseXMPPBot):
         ralph_names = self._ralph_running_names()
         for s in sessions:
             try:
-                node = "ralph" if s.name in ralph_names else None
+                node = self._session_node(
+                    "ralph" if s.name in ralph_names else None, project=s.project
+                )
                 items.add_item(JID(s.xmpp_jid), node=node, name=s.name)
             except Exception:
                 # Be defensive: never fail a directory response due to one row.
@@ -336,10 +360,14 @@ class DirectoryBot(BaseXMPPBot):
                 jid_val, node_val, name_val = item_tuple
                 session_el = ET.SubElement(payload, "session")
                 session_el.set("jid", str(jid_val))
-                if node_val == "closed":
+                tags = (node_val or "").split(":")
+                if "closed" in tags:
                     session_el.set("status", "closed")
-                elif node_val == "ralph":
+                elif "ralph" in tags:
                     session_el.set("ralph", "1")
+                for tag in tags:
+                    if tag.startswith("project="):
+                        session_el.set("project", tag[len("project=") :])
                 if name_val:
                     session_el.set("name", name_val)
             pubsub = cast(Any, self["xep_0060"])

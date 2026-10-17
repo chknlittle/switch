@@ -27,6 +27,7 @@ from src.bots.session.typing import TypingIndicator
 from src.commands import CommandHandler
 from src.db import MessageRepository, RalphLoopRepository, SessionRepository
 from src.lifecycle.sessions import create_session as lifecycle_create_session
+from src.projects import project_context
 from src.helpers import (
     append_to_history,
     log_activity,
@@ -135,10 +136,18 @@ class SessionBot(VllmAbortMixin, RoomMixin, DelegationHandlerMixin, BaseXMPPBot)
             working_dir=self.working_dir,
             output_dir=self.output_dir,
             infer_meta_tool_from_summary=self._infer_meta_tool_from_summary,
-            startup_prompt_context=self._build_delegation_startup_context,
+            startup_prompt_context=self._build_startup_context,
             on_ralph_activity=self._notify_ralph_activity,
             **ports,
         )
+
+    def _build_startup_context(self) -> str:
+        session = self.sessions.get(self.session_name)
+        parts = [
+            project_context(session.project) if session and session.project else "",
+            self._build_delegation_startup_context(),
+        ]
+        return "\n\n".join(p for p in parts if p)
 
     def _notify_ralph_activity(self) -> None:
         """Ping the directory so clients refresh ralph-loop markers."""

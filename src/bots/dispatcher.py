@@ -14,6 +14,7 @@ from src.db import SessionRepository
 from src.engines import PI_MODEL_DEFAULT
 from src.lifecycle.sessions import create_session as lifecycle_create_session
 from src.heartbeat import parse_heartbeat_command
+from src.projects import list_projects, parse_project_prefix
 from src.ralph import parse_ralph_command
 from src.runners import create_runner
 from src.runners.pi.config import PiConfig
@@ -99,6 +100,7 @@ class DispatcherBot(BaseXMPPBot):
             "/ralph": self._cmd_ralph,
             "/heartbeat": self._cmd_heartbeat,
             "/new": self._cmd_new,
+            "/projects": self._cmd_projects,
             "/help": self._cmd_help,
         }
 
@@ -205,6 +207,24 @@ class DispatcherBot(BaseXMPPBot):
             await self._dispatch_command(body, reply_to)
             return
 
+        project: str | None = None
+        parsed_project = parse_project_prefix(body)
+        if parsed_project:
+            project, body = parsed_project
+            known = list_projects()
+            if project not in known:
+                self.send_reply(
+                    f"Unknown project #{project}. Projects: "
+                    + (", ".join(f"#{p}" for p in known) or "none"),
+                    recipient=reply_to,
+                )
+                return
+            if not body:
+                self.send_reply(
+                    f"Usage: #{project} <prompt>", recipient=reply_to
+                )
+                return
+
         if self._WITH_FLAG_RE.search(body):
             parsed = self._parse_new_args(body)
             if not parsed:
@@ -220,10 +240,13 @@ class DispatcherBot(BaseXMPPBot):
                     reply_to=reply_to,
                     owner_jid=owner_jid,
                     collaborators=participants,
+                    project=project,
                 )
                 return
 
-        await self.create_session(body, reply_to=reply_to, owner_jid=owner_jid)
+        await self.create_session(
+            body, reply_to=reply_to, owner_jid=owner_jid, project=project
+        )
         if is_loopback:
             self.send_reply(f"Dispatcher received: {body}", recipient=reply_to)
 
@@ -335,6 +358,18 @@ class DispatcherBot(BaseXMPPBot):
         else:
             self.send_reply("Done (no output)", recipient=reply_to)
 
+    async def _cmd_projects(self, _arg: str, reply_to: str) -> None:
+        known = list_projects()
+        if not known:
+            self.send_reply(
+                "No projects. Add one: touch ~/switch/memory/<name>/.project",
+                recipient=reply_to,
+            )
+            return
+        self.send_reply(
+            "Projects: " + ", ".join(f"#{p}" for p in known), recipient=reply_to
+        )
+
     async def _cmd_help(self, _arg: str, reply_to: str) -> None:
         self.send_reply(
             f"Send any message to start a new {self.label} session.\n\n"
@@ -343,6 +378,8 @@ class DispatcherBot(BaseXMPPBot):
             "  /list - show sessions\n"
             "  /recent - recent with status\n"
             "  /kill <name> - end session\n"
+            "  #<project> <prompt> - start a session in a project\n"
+            "  /projects - list projects\n"
             "  /new --with <jid[,jid]> <prompt> - shared room session\n"
             "  /commit [host:]<repo> - commit and push\n"
             "  /ralph <args> - create a session and start a Ralph loop\n"
@@ -591,6 +628,7 @@ class DispatcherBot(BaseXMPPBot):
         reply_to: str,
         owner_jid: str,
         collaborators: list[str] | None = None,
+        project: str | None = None,
     ):
         """Create a new session."""
         self.send_typing()
@@ -615,6 +653,7 @@ class DispatcherBot(BaseXMPPBot):
             dispatcher_jid=str(self.boundjid.bare),
             owner_jid=owner_jid,
             collaborators=collaborators,
+            project=project,
         )
         if not created_name:
             self.send_reply("Failed to create session", recipient=reply_to)

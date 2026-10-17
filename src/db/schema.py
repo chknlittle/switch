@@ -114,6 +114,7 @@ def init_db() -> sqlite3.Connection:
         ("pi_session_id", "TEXT"),
         ("cursor_session_id", "TEXT"),
         ("system_prompt_extra", "TEXT"),
+        ("project", "TEXT"),
     ]
     existing_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
