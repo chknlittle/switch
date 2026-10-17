@@ -454,12 +454,9 @@ class EngineRunnerMixin:
             if isinstance(maybe_text, str):
                 final_text = maybe_text
 
+        # Tool calls are already streamed as separate progress messages;
+        # don't repeat them at the top of the final reply.
         parts: list[str] = []
-        if tool_summaries:
-            tools = " ".join(tool_summaries[:5])
-            if len(tool_summaries) > 5:
-                tools += f" +{len(tool_summaries) - 5}"
-            parts.append(tools)
         if final_text:
             parts.append(final_text)
 
